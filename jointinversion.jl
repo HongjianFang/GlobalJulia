@@ -1,15 +1,34 @@
 __precompile__()
-using PyCall
-using StatsBase
-using IterativeSolvers
-using SparseArrays
-using NearestNeighbors
-using HDF5
-using DataFrames
 
-const HVR = 2.0
-const EARTH_CMB = 3481.0
-const EARTH_RADIUS = 6371.0
+using Distributed
+#@everywhere using PyCall: pyimport 
+@everywhere import PyCall 
+@everywhere using StatsBase: sample,Weights,percentile
+@everywhere using IterativeSolvers: lsmr
+@everywhere using SparseArrays: sparse
+@everywhere using NearestNeighbors: KDTree,knn
+@everywhere using HDF5: h5read,h5write
+@everywhere using DataFrames
+
+@everywhere taup = PyCall.pyimport("obspy.taup")
+@everywhere model = taup.TauPyModel(model="ak135")
+@everywhere get_ray_paths_geo = model.get_ray_paths_geo
+
+@everywhere const HVR = 2.0
+@everywhere const EARTH_CMB = 3481.0
+@everywhere const EARTH_RADIUS = 6371.0
+
+@everywhere function wrap_get_ray_paths_geo(evdep::Float64,evlat::Float64,evlon::Float64,stlat::Float64,stlon::Float64,phase_list::Array{String,1},sampleds::Float64)
+    arr = get_ray_paths_geo(evdep,evlat,evlon,stlat,stlon,phase_list,true,sampleds)
+    lon = get(arr[1].path,"lon")   
+    lat = get(arr[1].path,"lat")   
+    dep = get(arr[1].path,"depth")   
+    raypts = hcat(lat,lon,dep)
+    rayparam = arr[1].ray_param
+    raytakeoffangle = arr[1].takeoff_angle
+    return (rayparam,raytakeoffangle,raypts)
+end
+
 ##
 
 #module pytaup
@@ -25,9 +44,9 @@ const EARTH_RADIUS = 6371.0
 
 ##
 
-function subspaceinv(datasub::DataFrame,iter::Int64,ncells::Int64=20000)
-    taup = pyimport("obspy.taup")
-    model = taup.TauPyModel(model="ak135")
+@everywhere function subspaceinv(datasub::DataFrame,iter::Int64,ncells::Int64=20000)
+   # taup = pyimport("obspy.taup")
+   # model = taup.TauPyModel(model="ak135")
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     mindist = 2.0
     nlat = 512
@@ -51,7 +70,7 @@ function subspaceinv(datasub::DataFrame,iter::Int64,ncells::Int64=20000)
     datasub = datasub[(datasub.dres .< q75) .& (datasub.dres .> q25),:]
     dataidx = 0
     ndata,_ = size(datasub)
-    println("start sensitivity mastrix $(ndata)")
+    #println("start sensitivity mastrix $(ndata)")
     @info "start sensitivity mastrix $(ndata)"
     for ii in 1:ndata
         #print("The $(ii)'th meansurement\r")
@@ -65,18 +84,23 @@ function subspaceinv(datasub::DataFrame,iter::Int64,ncells::Int64=20000)
         phaseno = datasub[ii,:phase]
         iss = datasub[ii,:iss]
         phase = phases[phaseno]
-        arr = model.get_ray_paths_geo(evdep, evlat, evlon, stlat, stlon, phase_list = phase, resample=true, sampleds=mindist)
-        if length(arr) < 1
-            continue
-        end
-        rayparam = arr[1].ray_param
-        raytakeoffangle = arr[1].takeoff_angle
+        ray = wrap_get_ray_paths_geo(evdep, evlat, evlon, stlat, stlon, phase, mindist)
+        rayparam = ray[1]
+        raytakeoffangle = ray[2]
+        raypts = ray[3]
+
+        #arr = model.get_ray_paths_geo(evdep, evlat, evlon, stlat, stlon, phase_list = phase, resample=true, sampleds=mindist)
+        #if length(arr) < 1
+        #    continue
+        #end
+        #rayparam = arr[1].ray_param
+        #raytakeoffangle = arr[1].takeoff_angle
+        #lon = get(arr[1].path,"lon")   
+        #lat = get(arr[1].path,"lat")   
+        #dep = get(arr[1].path,"depth")   
+        #raypts = hcat(lat,lon,dep)
         
         dataidx += 1
-        lon = get(arr[1].path,"lon")   
-        lat = get(arr[1].path,"lat")   
-        dep = get(arr[1].path,"depth")   
-        raypts = hcat(lat,lon,dep)
         raysph = geo2sph(raypts)
         rayxyz = sph2xyz(raysph)
         idxs, _ = knn(kdtree, rayxyz, k, false)
@@ -135,7 +159,7 @@ function subspaceinv(datasub::DataFrame,iter::Int64,ncells::Int64=20000)
     xp = x[1:ncells]
     xs = x[ncells+1:2*ncells]
 
-    print("begin projection matrix")
+    #print("begin projection matrix")
     @info "begin projection matrix"
     dlat = pi/nlat
     dlon = 2*pi/nlon
@@ -178,16 +202,16 @@ function subspaceinv(datasub::DataFrame,iter::Int64,ncells::Int64=20000)
     #h5write(tempdir*"/vs$(iter).h5","vs",vel[:,2])
     h5write("juliadata/vp$(iter).h5","vp",vp)
     h5write("juliadata/vs$(iter).h5","vs",vs)
-    return nothing
+    return vp[1]
 end
 
 
 ##
-"""
-generate vcells
-"""
-
-function generate_vcells(ncells::Int64=20000)::Array{Float64,2}
+#"""
+#generate vcells
+#"""
+#
+@everywhere function generate_vcells(ncells::Int64=20000)::Array{Float64,2}
     cellphi = acos.(rand(ncells).*2 .- 1.0)# .- pi/2.0
     celltheta = 2.0*pi*rand(ncells)
     stretchradialcmb = ( EARTH_RADIUS - EARTH_CMB ) .* HVR
@@ -197,13 +221,13 @@ function generate_vcells(ncells::Int64=20000)::Array{Float64,2}
 end
 ##
 
-"""
-transform geo-coordinates to spherical coordinates
-Args
-lat,lon,dep
-"""
+#"""
+#transform geo-coordinates to spherical coordinates
+#Args
+#lat,lon,dep
+#"""
 #function geo2sph(lat::Array{Float64,1},lon::Array{Float64,1},depth::Array{Float64,1})
-function geo2sph(geopts::Array{Float64,2})::Array{Float64,2}
+@everywhere function geo2sph(geopts::Array{Float64,2})::Array{Float64,2}
     lat = geopts[:,1]
     lon = geopts[:,2]
     depth = geopts[:,3]
@@ -217,12 +241,12 @@ end
 ##
 
 ##
-"""
-transform spherical coordinates to Cartician
-Args
-rad,phi,theta
-"""
-function sph2xyz(sph::Array{Float64,2})::Array{Float64,2}
+#"""
+#transform spherical coordinates to Cartician
+#Args
+#rad,phi,theta
+#"""
+@everywhere function sph2xyz(sph::Array{Float64,2})::Array{Float64,2}
     npoints,_ = size(sph)
     rad = sph[:,1]
     phi = sph[:,2]
@@ -236,10 +260,10 @@ end
 ##
 
 ##
-"""
-sample events based on their distribution
-"""
-function geteventidx(eventsloc::Array{Float64,2},eventcell::Int64 = 5000)::Array{Int64,1}
+#"""
+#sample events based on their distribution
+#"""
+@everywhere function geteventidx(eventsloc::Array{Float64,2},eventcell::Int64 = 5000)::Array{Int64,1}
 
     cellphi = acos.(rand(eventcell).*2 .- 1.0)
     celltheta = 2.0*pi*rand(eventcell)
@@ -259,7 +283,7 @@ function geteventidx(eventsloc::Array{Float64,2},eventcell::Int64 = 5000)::Array
 end
 
 ##
-function geteventsweight(events::DataFrame,nevents::Int64=100)::Array{Int64,1}
+@everywhere function geteventsweight(events::DataFrame,nevents::Int64=100)::Array{Int64,1}
     eventsloc = hcat(events[!,:evlat],events[!,:evlon],events[!,:evdep])
     idxs = geteventidx(eventsloc)
     events[!,:cellidx] = idxs
@@ -268,46 +292,53 @@ function geteventsweight(events::DataFrame,nevents::Int64=100)::Array{Int64,1}
     gd[!,:idx_sum] = 1.0./gd[!,:cellidx_length]
     gd = gd[!,[:eventid,:idx_sum]]
     items = gd[!,:eventid]
-    weights = gd[!,:idx_sum]
+    eventweights = gd[!,:idx_sum]
     eventid = events[:,:eventid]
-    eventsused = sample(eventid, Weights(weights),nevents)
+    eventsused = sample(eventid, Weights(eventweights),nevents)
     return eventsused 
 end
 
 ##
 #main function
 
-
-nrealizations = 5
-#tempdir = "juliadata"
-#if ! isdir(tempdir)
-#    mkdir(tempdir)
-#end
-data = h5read("../randmesh_global/jointdataset/jointdata_isc.h5","data")
-keyss = vcat(data["block0_items"],data["block1_items"])
-datasub = vcat(data["block0_values"],data["block1_values"])
-jdata = DataFrame(transpose(datasub),keyss)
-jdata[!,Symbol(data["block2_items"][1])] = vec(data["block2_values"])
-jdata[!,Symbol(data["block3_items"][1])] = vec(data["block3_values"])
-jdata[!,:iss] .= 0
-jdata[jdata.phase .== 3, :iss ] .= 1
-
-##
-events = jdata[:,[:evlat,:evlon,:evdep,:eventid]]
-unique!(events)
-nevents = 1000
-ncells = 20000
-
-for iter in 1:nrealizations
-    eventsused = copy(events)
-    eventsusedlist = geteventsweight(eventsused,nevents)
-    println("finish event sampling")
-    @info "finish event sampling"
-    jdatasub = jdata[in.(jdata.eventid,Ref(eventsusedlist)),:]
-    eventid = jdatasub[!,:eventid]
-    jdatasub[!,:eventidnew] = indexin(eventid,unique(eventid))
-    println("begin subspace inversion")
-    @info "begin subspace inversion"
-    subspaceinv(jdatasub,iter,ncells)
+function main()
+    nrealizations = 30
+    #tempdir = "juliadata"
+    #if ! isdir(tempdir)
+    #    mkdir(tempdir)
+    #end
+    data = h5read("../randmesh_global/jointdataset/jointdata_isc.h5","data")
+    keyss = vcat(data["block0_items"],data["block1_items"])
+    datasub = vcat(data["block0_values"],data["block1_values"])
+    jdata = DataFrame(transpose(datasub),keyss)
+    jdata[!,Symbol(data["block2_items"][1])] = vec(data["block2_values"])
+    jdata[!,Symbol(data["block3_items"][1])] = vec(data["block3_values"])
+    jdata[!,:iss] .= 0
+    jdata[jdata.phase .== 3, :iss ] .= 1
+    
+    ##
+    events = jdata[:,[:evlat,:evlon,:evdep,:eventid]]
+    unique!(events)
+    nevents = 1000
+    ncells = 20000
+    #taup = pyimport("obspy.taup")
+    #model = taup.TauPyModel(model="ak135")
+    #@everywhere using SharedArrays
+    #vp = SharedArray(zeros(10))
+    @sync @distributed for iter in 10:10+nrealizations
+        eventsused = copy(events)
+        eventsusedlist = geteventsweight(eventsused,nevents)
+        #println("finish event sampling")
+        @info "finish event sampling"
+        jdatasub = jdata[in.(jdata.eventid,Ref(eventsusedlist)),:]
+        eventid = jdatasub[!,:eventid]
+        jdatasub[!,:eventidnew] = indexin(eventid,unique(eventid))
+        #println("begin subspace inversion")
+        @info "begin subspace inversion"
+        subspaceinv(jdatasub,iter,ncells)
+    end
+    return nothing
 end
+
+main()
 

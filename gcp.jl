@@ -25,7 +25,10 @@ function gcp(lat1::Float64,lon1::Float64,lat2::Float64,lon2::Float64,delta::Floa
     lats = asin.(unit_r[:,2])
     lons = atan.(unit_r[:,1],unit_r[:,3])
 
-    return hcat(lats,lons)
+    path = hcat(lats,lons)
+    dist = [total_ar*r0,r0]
+    dist = reshape(dist,1,2)
+    return vcat(path,dist)
 end
 
 
