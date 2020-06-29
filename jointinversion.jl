@@ -7,7 +7,7 @@ using Distributed
 @everywhere using IterativeSolvers: lsmr
 @everywhere using SparseArrays: sparse
 @everywhere using NearestNeighbors: KDTree,knn
-@everywhere using HDF5: h5read,h5write
+@everywhere using HDF5#: h5read,h5write,h5open
 @everywhere using DataFrames
 
 @everywhere taup = PyCall.pyimport("obspy.taup")
@@ -20,13 +20,25 @@ using Distributed
 
 @everywhere function wrap_get_ray_paths_geo(evdep::Float64,evlat::Float64,evlon::Float64,stlat::Float64,stlon::Float64,phase_list::Array{String,1},sampleds::Float64)
     arr = get_ray_paths_geo(evdep,evlat,evlon,stlat,stlon,phase_list,true,sampleds)
-    lon = get(arr[1].path,"lon")   
-    lat = get(arr[1].path,"lat")   
-    dep = get(arr[1].path,"depth")   
-    raypts = hcat(lat,lon,dep)
-    rayparam = arr[1].ray_param
-    raytakeoffangle = arr[1].takeoff_angle
-    return (rayparam,raytakeoffangle,raypts)
+    rayparam = 0.0
+    raytakeoffangle = 0.0
+    ifray = true
+    raypts = []
+    if length(arr)>0
+        lon = get(arr[1].path,"lon")   
+        lon = deg2rad.(lon)
+        lat = get(arr[1].path,"lat")   
+        lat = pi/2.0 .- deg2rad.(lat)
+        dep = get(arr[1].path,"depth")   
+        rad = EARTH_RADIUS .- dep .* HVR
+        raypts = hcat(rad,lat,lon)
+        rayparam = arr[1].ray_param
+        raytakeoffangle = arr[1].takeoff_angle
+    else 
+        ifray = false
+        #return (ifray,rayparam,raytakeoffangle,raypts)
+    end
+    return (ifray,rayparam,raytakeoffangle,raypts)
 end
 
 ##
@@ -70,7 +82,7 @@ end
     datasub = datasub[(datasub.dres .< q75) .& (datasub.dres .> q25),:]
     dataidx = 0
     ndata,_ = size(datasub)
-    #println("start sensitivity mastrix $(ndata)")
+    println("start sensitivity mastrix $(ndata)");flush(stdout)
     @info "start sensitivity mastrix $(ndata)"
     for ii in 1:ndata
         #print("The $(ii)'th meansurement\r")
@@ -85,9 +97,13 @@ end
         iss = datasub[ii,:iss]
         phase = phases[phaseno]
         ray = wrap_get_ray_paths_geo(evdep, evlat, evlon, stlat, stlon, phase, mindist)
-        rayparam = ray[1]
-        raytakeoffangle = ray[2]
-        raypts = ray[3]
+        ifray = ray[1]
+        if !ifray
+            continue
+        end
+        rayparam = ray[2]
+        raytakeoffangle = ray[3]
+        raysph = ray[4]
 
         #arr = model.get_ray_paths_geo(evdep, evlat, evlon, stlat, stlon, phase_list = phase, resample=true, sampleds=mindist)
         #if length(arr) < 1
@@ -101,7 +117,7 @@ end
         #raypts = hcat(lat,lon,dep)
         
         dataidx += 1
-        raysph = geo2sph(raypts)
+        #raysph = geo2sph(raypts)
         rayxyz = sph2xyz(raysph)
         idxs, _ = knn(kdtree, rayxyz, k, false)
         idxs = [x[1] for x in idxs]
@@ -142,7 +158,7 @@ end
         append!(b,datasub[ii,:dres])
     end
 
-    #println("nonzeros: $(length(nonzeros))")
+    println("nonzeros: $(length(values))");flush(stdout)
     G = sparse(row,col,values)
     row = []
     col = []
@@ -159,7 +175,7 @@ end
     xp = x[1:ncells]
     xs = x[ncells+1:2*ncells]
 
-    #print("begin projection matrix")
+    print("begin projection matrix");flush(stdout)
     @info "begin projection matrix"
     dlat = pi/nlat
     dlon = 2*pi/nlon
@@ -200,9 +216,15 @@ end
     #vel = convert(Array{Float32},vel)
     #h5write(tempdir*"/vp$(iter).h5","vp",vel[:,1])
     #h5write(tempdir*"/vs$(iter).h5","vs",vel[:,2])
-    h5write("juliadata/vp$(iter).h5","vp",vp)
-    h5write("juliadata/vs$(iter).h5","vs",vs)
-    return vp[1]
+    #h5write("juliadata/vp$(iter).h5","vp",vp)
+    #h5write("juliadata/vs$(iter).h5","vs",vs)
+    h5open("juliadata/vp$(iter).h5","w") do file
+        write(file,"vp",vp)
+    end
+    h5open("juliadata/vs$(iter).h5","w") do file
+        write(file,"vs",vs)
+    end
+    return nothing#vp[1]
 end
 
 
@@ -302,7 +324,7 @@ end
 #main function
 
 function main()
-    nrealizations = 30
+    nrealizations = 10
     #tempdir = "juliadata"
     #if ! isdir(tempdir)
     #    mkdir(tempdir)
@@ -319,26 +341,25 @@ function main()
     ##
     events = jdata[:,[:evlat,:evlon,:evdep,:eventid]]
     unique!(events)
-    nevents = 1000
+    nevents = 900
     ncells = 20000
     #taup = pyimport("obspy.taup")
     #model = taup.TauPyModel(model="ak135")
     #@everywhere using SharedArrays
     #vp = SharedArray(zeros(10))
-    @sync @distributed for iter in 10:10+nrealizations
+    @sync @distributed for iter in 40:39+nrealizations
         eventsused = copy(events)
         eventsusedlist = geteventsweight(eventsused,nevents)
-        #println("finish event sampling")
+        println("finish event sampling");flush(stdout)
         @info "finish event sampling"
         jdatasub = jdata[in.(jdata.eventid,Ref(eventsusedlist)),:]
         eventid = jdatasub[!,:eventid]
         jdatasub[!,:eventidnew] = indexin(eventid,unique(eventid))
-        #println("begin subspace inversion")
+        println("begin subspace inversion");flush(stdout)
         @info "begin subspace inversion"
         subspaceinv(jdatasub,iter,ncells)
     end
     return nothing
 end
 
-main()
-
+@time main()
