@@ -9,6 +9,7 @@ using Distributed
 @everywhere using NearestNeighbors: KDTree,knn
 @everywhere using HDF5#: h5read,h5write,h5open
 @everywhere using DataFrames
+@everywhere using LinearAlgebra
 
 @everywhere taup = PyCall.pyimport("obspy.taup")
 @everywhere model = taup.TauPyModel(model="ak135")
@@ -160,11 +161,26 @@ end
 
     println("nonzeros: $(length(values))");flush(stdout)
     G = sparse(row,col,values)
+    
+    ncol = size(G,2)
+    cnorm = zeros(Float64,ncol)
+    for icol = 1 : ncol
+        i = G.colptr[icol]
+        k = G.colptr[icol+1] - 1
+        n = i <= k ? norm(G.nzval[i:k]) : 0.0  
+        n > 0.0 && (G.nzval[i:k] ./= n)
+        cnorm[icol] = n
+    end
+    colid = findall(x->x>0,cnorm)# .+ iss*ncells
+    G = G[:,colid]
+    cnorm = cnorm[colid]
+
+
     row = []
     col = []
     values = []
     
-    damp = 0.1
+    damp = 1.0
     atol = 1e-4
     btol = 1e-6
     conlim = 100
@@ -172,8 +188,12 @@ end
     x = lsmr(G,b,λ=damp, atol = atol, btol = btol,log = true)
 
     x = x[1]
-    xp = x[1:ncells]
-    xs = x[ncells+1:2*ncells]
+    x ./= cnorm
+    xall = zeros(Float64,ncol)
+    xall[colid] = x
+    xp = xall[1:ncells]
+    xs = xall[ncells+1:2*ncells]
+    xall = 0.0
 
     print("begin projection matrix");flush(stdout)
     @info "begin projection matrix"
@@ -197,6 +217,7 @@ end
     latall = []
     lonall = []
     
+    k = 1
     colgp, _ = knn(kdtree, gridxyz, k, false)
     colgp = [x[1] for x in colgp]
     rowgp = collect(1:npara)
@@ -347,7 +368,7 @@ function main()
     #model = taup.TauPyModel(model="ak135")
     #@everywhere using SharedArrays
     #vp = SharedArray(zeros(10))
-    @sync @distributed for iter in 40:39+nrealizations
+    @sync @distributed for iter in 60:59+nrealizations
         eventsused = copy(events)
         eventsusedlist = geteventsweight(eventsused,nevents)
         println("finish event sampling");flush(stdout)
