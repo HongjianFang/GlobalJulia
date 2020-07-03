@@ -1,14 +1,13 @@
 __precompile__()
 
 using Distributed
-#@everywhere using PyCall: pyimport 
 @everywhere import PyCall 
 @everywhere using StatsBase: sample,Weights,percentile
 @everywhere using IterativeSolvers: lsmr
 @everywhere using SparseArrays: sparse
 @everywhere using NearestNeighbors: KDTree,knn
 @everywhere using HDF5#: h5read,h5write,h5open
-@everywhere using DataFrames
+@everywhere using JuliaDB
 @everywhere using LinearAlgebra
 
 @everywhere taup = PyCall.pyimport("obspy.taup")
@@ -37,29 +36,11 @@ using Distributed
         raytakeoffangle = arr[1].takeoff_angle
     else 
         ifray = false
-        #return (ifray,rayparam,raytakeoffangle,raypts)
     end
     return (ifray,rayparam,raytakeoffangle,raypts)
 end
 
-##
-
-#module pytaup
-#using PyCall
-#export taup
-#
-#const taup = PyNULL()
-#
-#function __init__()
-#        copy!(taup, pyimport_conda("obspy.taup", "obspy"))
-#    end
-#end
-
-##
-
-@everywhere function subspaceinv(datasub::DataFrame,iter::Int64,ncells::Int64=20000)
-   # taup = pyimport("obspy.taup")
-   # model = taup.TauPyModel(model="ak135")
+@everywhere function subspaceinv(datasub::IndexedTable,iter::Int64,ncells::Int64=20000)
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     mindist = 2.0
     nlat = 512
@@ -72,30 +53,40 @@ end
     cellxyz = sph2xyz(cellsph)
     kdtree = KDTree(cellxyz;leafsize=10)
     
-   
     row = Int64[]
     col = Int64[]
     values = Float64[]
     b = Float64[]
-    dres = datasub[!,:dres]
+    dres = select(datasub,:dres)
     q25 = factor * percentile(dres,25)
     q75 = factor * percentile(dres,75)
-    datasub = datasub[(datasub.dres .< q75) .& (datasub.dres .> q25),:]
+    datasub = filter(x -> (x.dres < q75) && (x.dres > q25),datasub)
     dataidx = 0
-    ndata,_ = size(datasub)
+    ndata = length(datasub)
     println("start sensitivity mastrix $(ndata)");flush(stdout)
     @info "start sensitivity mastrix $(ndata)"
+
+    evlatall = select(datasub,:evlat)
+    evlonall = select(datasub,:evlon)
+    evdepall = select(datasub,:evdep)
+    stlatall = select(datasub,:stlat)
+    stlonall = select(datasub,:stlon)
+    azimall = select(datasub,:azim)
+    eventidnewall = select(datasub,:eventidnew)
+    phaseall = select(datasub,:phase)
+    issall = select(datasub,:iss)
+    datasuball = select(datasub,:dres)
+
     for ii in 1:ndata
-        #print("The $(ii)'th meansurement\r")
-        evlat = datasub[ii,:evlat]
-        evlon = datasub[ii,:evlon]
-        evdep = datasub[ii,:evdep]
-        stlat = datasub[ii,:stlat]
-        stlon = datasub[ii,:stlon]
-        azimulth = datasub[ii,:azim]
-        srcidx = datasub[ii,:eventidnew]
-        phaseno = datasub[ii,:phase]
-        iss = datasub[ii,:iss]
+        evlat = evlatall[ii]
+        evlon = evlonall[ii]
+        evdep = evdepall[ii]
+        stlat = stlatall[ii]
+        stlon = stlonall[ii]
+        azimulth = azimall[ii]
+        srcidx =  eventidnewall[ii]
+        phaseno = phaseall[ii]
+        iss =     issall[ii]
         phase = phases[phaseno]
         ray = wrap_get_ray_paths_geo(evdep, evlat, evlon, stlat, stlon, phase, mindist)
         ifray = ray[1]
@@ -106,19 +97,7 @@ end
         raytakeoffangle = ray[3]
         raysph = ray[4]
 
-        #arr = model.get_ray_paths_geo(evdep, evlat, evlon, stlat, stlon, phase_list = phase, resample=true, sampleds=mindist)
-        #if length(arr) < 1
-        #    continue
-        #end
-        #rayparam = arr[1].ray_param
-        #raytakeoffangle = arr[1].takeoff_angle
-        #lon = get(arr[1].path,"lon")   
-        #lat = get(arr[1].path,"lat")   
-        #dep = get(arr[1].path,"depth")   
-        #raypts = hcat(lat,lon,dep)
-        
         dataidx += 1
-        #raysph = geo2sph(raypts)
         rayxyz = sph2xyz(raysph)
         idxs, _ = knn(kdtree, rayxyz, k, false)
         idxs = [x[1] for x in idxs]
@@ -156,7 +135,7 @@ end
         append!(col,colid)
         append!(row,rowid)
         append!(values,nonzeros)
-        append!(b,datasub[ii,:dres])
+        append!(b,datasuball[ii])
     end
 
     println("nonzeros: $(length(values))");flush(stdout)
@@ -172,6 +151,8 @@ end
         cnorm[icol] = n
     end
     colid = findall(x->x>0,cnorm)# .+ iss*ncells
+    normthresh = percentile(cnorm[colid],10)
+    colid = findall(x->x>normthresh,cnorm)# .+ iss*ncells
     G = G[:,colid]
     cnorm = cnorm[colid]
 
@@ -186,6 +167,7 @@ end
     conlim = 100
     maxiter = 100
     x = lsmr(G,b,λ=damp, atol = atol, btol = btol,log = true)
+    println(x[2])
 
     x = x[1]
     x ./= cnorm
@@ -233,12 +215,6 @@ end
     vs = Gp*xs
     vp = convert(Array{Float32},vp)
     vs = convert(Array{Float32},vs)
-    #vel = hcat(vp,vs)
-    #vel = convert(Array{Float32},vel)
-    #h5write(tempdir*"/vp$(iter).h5","vp",vel[:,1])
-    #h5write(tempdir*"/vs$(iter).h5","vs",vel[:,2])
-    #h5write("juliadata/vp$(iter).h5","vp",vp)
-    #h5write("juliadata/vs$(iter).h5","vs",vs)
     h5open("juliadata/vp$(iter).h5","w") do file
         write(file,"vp",vp)
     end
@@ -269,7 +245,6 @@ end
 #Args
 #lat,lon,dep
 #"""
-#function geo2sph(lat::Array{Float64,1},lon::Array{Float64,1},depth::Array{Float64,1})
 @everywhere function geo2sph(geopts::Array{Float64,2})::Array{Float64,2}
     lat = geopts[:,1]
     lon = geopts[:,2]
@@ -326,17 +301,16 @@ end
 end
 
 ##
-@everywhere function geteventsweight(events::DataFrame,nevents::Int64=100)::Array{Int64,1}
-    eventsloc = hcat(events[!,:evlat],events[!,:evlon],events[!,:evdep])
+@everywhere function geteventsweight(events::IndexedTable,nevents::Int64=100)::Array{Int64,1}
+    eventsloc = hcat(select(events,:evlat),select(events,:evlon),select(events,:evdep))
     idxs = geteventidx(eventsloc)
-    events[!,:cellidx] = idxs
-    gd = combine(groupby(events,:cellidx),:eventid,:cellidx=>length)
-    #gd = combine(gd,:cellidx => count)
-    gd[!,:idx_sum] = 1.0./gd[!,:cellidx_length]
-    gd = gd[!,[:eventid,:idx_sum]]
-    items = gd[!,:eventid]
-    eventweights = gd[!,:idx_sum]
-    eventid = events[:,:eventid]
+    events = transform(events,:cellidx => idxs)
+    gd = groupby(length,events,:cellidx)
+    idx_sum = 1.0 ./ select(gd,:length)
+    gd = transform(gd,:idx_sum=>idx_sum)
+    events = join(events,gd,lkey=:cellidx,rkey=:cellidx)
+    eventweights = select(events,:idx_sum)
+    eventid = select(events,:eventid)
     eventsused = sample(eventid, Weights(eventweights),nevents)
     return eventsused 
 end
@@ -345,39 +319,52 @@ end
 #main function
 
 function main()
-    nrealizations = 10
-    #tempdir = "juliadata"
-    #if ! isdir(tempdir)
-    #    mkdir(tempdir)
-    #end
+    nrealizations = 3 
     data = h5read("../randmesh_global/jointdataset/jointdata_isc.h5","data")
     keyss = vcat(data["block0_items"],data["block1_items"])
     datasub = vcat(data["block0_values"],data["block1_values"])
-    jdata = DataFrame(transpose(datasub),keyss)
-    jdata[!,Symbol(data["block2_items"][1])] = vec(data["block2_values"])
-    jdata[!,Symbol(data["block3_items"][1])] = vec(data["block3_values"])
-    jdata[!,:iss] .= 0
-    jdata[jdata.phase .== 3, :iss ] .= 1
+    datasub = transpose(datasub)
+    jdata = table(datasub[:,1],datasub[:,2],datasub[:,3],datasub[:,4],
+                  datasub[:,5],datasub[:,6],datasub[:,7],datasub[:,8];
+                  names=[Symbol(ikey) for ikey in keyss])
+    jdata = transform(jdata,Symbol(data["block2_items"][1])=>vec(data["block2_values"]))
+    jdata = transform(jdata,Symbol(data["block3_items"][1])=>vec(data["block3_values"]))
+    iss = map(i -> i.phase<3 ? 0 : 1,jdata)
+    jdata = transform(jdata,:iss=>iss)
     
     ##
-    events = jdata[:,[:evlat,:evlon,:evdep,:eventid]]
-    unique!(events)
-    nevents = 900
+    events = select(jdata,(:evlat,:evlon,:evdep,:eventid))
+    events = table(unique!(rows(events)))
+    nevents = 3000
     ncells = 20000
-    #taup = pyimport("obspy.taup")
-    #model = taup.TauPyModel(model="ak135")
-    #@everywhere using SharedArrays
-    #vp = SharedArray(zeros(10))
-    @sync @distributed for iter in 60:59+nrealizations
-        eventsused = copy(events)
-        eventsusedlist = geteventsweight(eventsused,nevents)
+    ndatap = 400_000
+    ndatas_frac = 0.9
+    @sync @distributed for iter in 30:29+nrealizations
+        eventsusedlist = geteventsweight(events,nevents)
         println("finish event sampling");flush(stdout)
-        @info "finish event sampling"
-        jdatasub = jdata[in.(jdata.eventid,Ref(eventsusedlist)),:]
-        eventid = jdatasub[!,:eventid]
-        jdatasub[!,:eventidnew] = indexin(eventid,unique(eventid))
+        @info "finish event sampling $(length(eventsusedlist))"
+        jdatasub = filter(i -> i.eventid in eventsusedlist,jdata)
+        eventid = select(jdatasub,:eventid)
+        newidx = indexin(eventid,unique(eventid))
+        jdatasub = transform(jdatasub,:eventidnew=>newidx)
+
+        #sample P and S data
+        jdatasubp = filter(x -> x.iss == 0, jdatasub)
+        ndatap_bs = length(jdatasubp)
+        nsample = min(ndatap_bs,ndatap)
+        jdatasubp = jdatasubp[unique(sample(1:ndatap_bs,nsample,ordered=true))]
+
+        jdatasubs = filter(x -> x.iss == 1, jdatasub)
+        ndatas_bs = length(jdatasubs)
+        nsample = ceil(ndatas_bs * ndatas_frac)
+        nsample = convert(Int64,nsample)
+        jdatasubs = jdatasubs[unique(sample(1:ndatas_bs,nsample,ordered=true))]
+        jdatasub = merge(jdatasubp,jdatasubs)
+        jdatasubp = []
+        jdatasubs = []
+
         println("begin subspace inversion");flush(stdout)
-        @info "begin subspace inversion"
+        @info "begin subspace inversion $(length(jdatasub))"
         subspaceinv(jdatasub,iter,ncells)
     end
     return nothing
