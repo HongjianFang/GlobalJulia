@@ -18,12 +18,12 @@ using Distributed
 @everywhere const EARTH_CMB = 3481.0
 @everywhere const EARTH_RADIUS = 6371.0
 
-@everywhere function wrap_get_ray_paths_geo(evdep::Float64,evlat::Float64,evlon::Float64,stlat::Float64,stlon::Float64,phase_list::Array{String,1},sampleds::Float64)
+@everywhere function wrap_get_ray_paths_geo(evdep::Float32,evlat::Float32,evlon::Float32,stlat::Float32,stlon::Float32,phase_list::Array{String,1},sampleds::Float32)
     arr = get_ray_paths_geo(evdep,evlat,evlon,stlat,stlon,phase_list,true,sampleds)
     rayparam = 0.0
     raytakeoffangle = 0.0
     ifray = true
-    raypts = []
+    #raypts = Float32[]
     if length(arr)>0
         lon = get(arr[1].path,"lon")   
         lon = deg2rad.(lon)
@@ -32,6 +32,7 @@ using Distributed
         dep = get(arr[1].path,"depth")   
         rad = EARTH_RADIUS .- dep .* HVR
         raypts = hcat(rad,lat,lon)
+        raypts = convert(Array{Float32,2},raypts)
         rayparam = arr[1].ray_param
         raytakeoffangle = arr[1].takeoff_angle
     else 
@@ -40,9 +41,8 @@ using Distributed
     return (ifray,rayparam,raytakeoffangle,raypts)
 end
 
-@everywhere function subspaceinv(datasub::IndexedTable,iter::Int64,ncells::Int64=20000)
-    phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
-    mindist = 2.0
+@everywhere function subspaceinv(datasub::IndexedTable,iter::Number,ncells::Number,phases::Array{Array{String,1},1})
+    mindist = convert(Float32,2.0)
     nlat = 512
     nlon = 1024
     nrad = 128
@@ -53,10 +53,10 @@ end
     cellxyz = sph2xyz(cellsph)
     kdtree = KDTree(cellxyz;leafsize=10)
     
-    row = Int64[]
-    col = Int64[]
-    values = Float64[]
-    b = Float64[]
+    row = Int32[]
+    col = Int32[]
+    values = Float32[]
+    b = Float32[]
     dres = select(datasub,:dres)
     q25 = factor * percentile(dres,25)
     q75 = factor * percentile(dres,75)
@@ -87,6 +87,7 @@ end
         srcidx =  eventidnewall[ii]
         phaseno = phaseall[ii]
         iss =     issall[ii]
+        bres = datasuball[ii]
         phase = phases[phaseno]
         ray = wrap_get_ray_paths_geo(evdep, evlat, evlon, stlat, stlon, phase, mindist)
         ifray = ray[1]
@@ -95,28 +96,28 @@ end
         end
         rayparam = ray[2]
         raytakeoffangle = ray[3]
-        raysph = ray[4]
+        raysph = ray[4]#convert(Array{Float32,2},ray[4])
 
         dataidx += 1
         rayxyz = sph2xyz(raysph)
         idxs, _ = knn(kdtree, rayxyz, k, false)
         idxs = [x[1] for x in idxs]
-        rowray = zeros(Float64,ncells)
+        rowray = zeros(Float32,ncells)
         for id in idxs
             rowray[id] += mindist
         end
         colid = findall(x->x>0,rowray)# .+ iss*ncells
         nonzeros = rowray[colid]
         colid = colid .+ iss*ncells
-        rowid = ones(Int64,size(colid)) .* dataidx
+        rowid = ones(Int32,size(colid)) .* dataidx
         append!(col,colid)
         append!(row,rowid)
         append!(values,nonzeros)
         
         #relocation
-        colid = zeros(Int64,4)
-        rowid = zeros(Int64,4)
-        nonzeros = zeros(Float64,4)
+        colid = zeros(Int32,4)
+        rowid = zeros(Int32,4)
+        nonzeros = zeros(Float32,4)
         deltar = 10.0
         colid[1] = 2*ncells+srcidx*4+1
         rowid[1] = dataidx
@@ -135,14 +136,14 @@ end
         append!(col,colid)
         append!(row,rowid)
         append!(values,nonzeros)
-        append!(b,datasuball[ii])
+        append!(b,bres)
     end
 
-    println("nonzeros: $(length(values))");flush(stdout)
+    println("Finishing ray tracing with nonzeros: $(length(values))");flush(stdout)
     G = sparse(row,col,values)
     
     ncol = size(G,2)
-    cnorm = zeros(Float64,ncol)
+    cnorm = zeros(Float32,ncol)
     for icol = 1 : ncol
         i = G.colptr[icol]
         k = G.colptr[icol+1] - 1
@@ -151,15 +152,15 @@ end
         cnorm[icol] = n
     end
     colid = findall(x->x>0,cnorm)# .+ iss*ncells
-    normthresh = percentile(cnorm[colid],10)
+    normthresh = percentile(cnorm[colid],20)
     colid = findall(x->x>normthresh,cnorm)# .+ iss*ncells
     G = G[:,colid]
     cnorm = cnorm[colid]
 
 
-    row = []
-    col = []
-    values = []
+    row = 0
+    col = 0
+    values = 0
     
     damp = 1.0
     atol = 1e-4
@@ -171,7 +172,8 @@ end
 
     x = x[1]
     x ./= cnorm
-    xall = zeros(Float64,ncol)
+    x = convert(Array{Float32,1},x)
+    xall = zeros(Float32,ncol)
     xall[colid] = x
     xp = xall[1:ncells]
     xs = xall[ncells+1:2*ncells]
@@ -184,32 +186,55 @@ end
     drad = (EARTH_RADIUS-EARTH_CMB)/nrad
     lat = -(pi-dlat)/2.0:dlat:(pi-dlat)/2.0
     lat = collect(pi/2.0 .- lat)
+    lat = convert(Array{Float32},lat)
     lon = dlon/2.0:dlon:2*pi
     lon = collect(lon)
+    lon = convert(Array{Float32},lon)
     rad = EARTH_RADIUS .- HVR.*(drad/2.0:drad:nrad*drad-drad/2.0)
     rad = collect(rad)
+    rad = convert(Array{Float32},rad)
     npara = nlat*nlon*nrad
-    latall = reshape([xj for xj in lat for yj in lon for zj in rad], npara)
-    lonall = reshape([yj for xj in lat for yj in lon for zj in rad], npara)
-    radall = reshape([zj for xj in lat for yj in lon for zj in rad], npara)
+    #latall = reshape([xj for xj in lat for yj in lon for zj in rad], npara)
+    #lonall = reshape([yj for xj in lat for yj in lon for zj in rad], npara)
+    #radall = reshape([zj for xj in lat for yj in lon for zj in rad], npara)
+
+    latall = zeros(Float32,npara)
+    lonall = zeros(Float32,npara)
+    radall = zeros(Float32,npara)
+
+    idx = 0
+    for xj in lat
+        for yj in lon
+            for zj in rad
+                idx += 1
+                latall[idx] = xj
+                lonall[idx] = yj
+                radall[idx] = zj
+            end
+        end
+    end
     
     gridsph = hcat(radall,latall,lonall)
+    #gridsph = convert(Array{Float32,2},gridsph)
     gridxyz = sph2xyz(gridsph)
-    radall = []
-    latall = []
-    lonall = []
+    radall = 0 
+    latall = 0
+    lonall = 0
+    gridsph = 0
     
+    println("Finishing projection matrix")
     k = 1
     colgp, _ = knn(kdtree, gridxyz, k, false)
+    gridxyz = 0
     colgp = [x[1] for x in colgp]
-    rowgp = collect(1:npara)
-    valuegp = ones(Float64,npara)
+    colgp = convert(Array{Int32,1},colgp)
+    rowgp = convert(Array{Int32,1},collect(1:npara))
+    valuegp = ones(Float32,npara)
     Gp = sparse(rowgp,colgp,valuegp,npara,ncells)
 
-    gridxyz = []
-    rowgp = []
-    colgp = []
-    valuegp = []
+    rowgp = 0
+    colgp = 0
+    valuegp = 0 
  
     vp = Gp*xp
     vs = Gp*xs
@@ -230,12 +255,13 @@ end
 #generate vcells
 #"""
 #
-@everywhere function generate_vcells(ncells::Int64=20000)::Array{Float64,2}
+@everywhere function generate_vcells(ncells::Number=20000)::Array{Float32,2}
     cellphi = acos.(rand(ncells).*2 .- 1.0)# .- pi/2.0
     celltheta = 2.0*pi*rand(ncells)
     stretchradialcmb = ( EARTH_RADIUS - EARTH_CMB ) .* HVR
     cellrad =  stretchradialcmb .* rand(ncells) .+ EARTH_RADIUS .- stretchradialcmb
     cellptssph = hcat(cellrad,cellphi,celltheta)
+    cellptssph = convert(Array{Float32,2},cellptssph)
     return cellptssph
 end
 ##
@@ -245,12 +271,12 @@ end
 #Args
 #lat,lon,dep
 #"""
-@everywhere function geo2sph(geopts::Array{Float64,2})::Array{Float64,2}
+@everywhere function geo2sph(geopts::Array{Float32,2})::Array{Float32,2}
     lat = geopts[:,1]
     lon = geopts[:,2]
     depth = geopts[:,3]
     npoints = length(lat)
-    sph = zeros(Float64,npoints,3)
+    sph = zeros(Float32,npoints,3)
     sph[:,1] = -depth .+ EARTH_RADIUS 
     sph[:,2] = -deg2rad.(lat) .+ pi/2.0  
     sph[:,3] = deg2rad.(lon)
@@ -264,15 +290,15 @@ end
 #Args
 #rad,phi,theta
 #"""
-@everywhere function sph2xyz(sph::Array{Float64,2})::Array{Float64,2}
+@everywhere function sph2xyz(sph::Array{Float32,2})::Array{Float32,2}
     npoints,_ = size(sph)
-    rad = sph[:,1]
-    phi = sph[:,2]
-    theta = sph[:,3]
-    xyz = zeros(Float64,npoints,3)
-    xyz[:,1] = rad .* sin.(phi) .* cos.(theta)
-    xyz[:,2] = rad .* sin.(phi) .* sin.(theta)
-    xyz[:,3] = rad .* cos.(phi) 
+    #rad = sph[:,1]
+    #phi = sph[:,2]
+    #theta = sph[:,3]
+    xyz = zeros(Float32,npoints,3)
+    xyz[:,1] = sph[:,1] .* sin.(sph[:,2]) .* cos.(sph[:,3])
+    xyz[:,2] = sph[:,1] .* sin.(sph[:,2]) .* sin.(sph[:,3])
+    xyz[:,3] = sph[:,1] .* cos.(sph[:,2]) 
     return transpose(xyz)
 end
 ##
@@ -281,13 +307,14 @@ end
 #"""
 #sample events based on their distribution
 #"""
-@everywhere function geteventidx(eventsloc::Array{Float64,2},eventcell::Int64 = 5000)::Array{Int64,1}
+@everywhere function geteventidx(eventsloc::Array{Float32,2},eventcell::Number = 5000)::Array{Int32,1}
 
     cellphi = acos.(rand(eventcell).*2 .- 1.0)
     celltheta = 2.0*pi*rand(eventcell)
     cellrad = EARTH_RADIUS .- 660.0 * rand(eventcell) 
 
     sph = hcat(cellphi,celltheta,cellrad)
+    sph = convert(Array{Float32,2},sph)
 
     cellxyz = sph2xyz(sph)
     kdtree = KDTree(cellxyz;leafsize=10)
@@ -296,12 +323,13 @@ end
     k = 1
     idxs, _ = knn(kdtree, xyz, k, false)
     idxs = [x[1] for x in idxs]
+    idxs = convert(Array{Int32,1},idxs)
 
     return idxs
 end
 
 ##
-@everywhere function geteventsweight(events::IndexedTable,nevents::Int64=100)::Array{Int64,1}
+@everywhere function geteventsweight(events::IndexedTable,nevents::Number=100)::Array{Int32,1}
     eventsloc = hcat(select(events,:evlat),select(events,:evlon),select(events,:evdep))
     idxs = geteventidx(eventsloc)
     events = transform(events,:cellidx => idxs)
@@ -320,32 +348,39 @@ end
 
 function main()
     nrealizations = 3 
+    phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     data = h5read("../randmesh_global/jointdataset/jointdata_isc.h5","data")
     keyss = vcat(data["block0_items"],data["block1_items"])
     datasub = vcat(data["block0_values"],data["block1_values"])
-    datasub = transpose(datasub)
+    datasub = convert(Array{Float32,2},transpose(datasub))
     jdata = table(datasub[:,1],datasub[:,2],datasub[:,3],datasub[:,4],
                   datasub[:,5],datasub[:,6],datasub[:,7],datasub[:,8];
                   names=[Symbol(ikey) for ikey in keyss])
-    jdata = transform(jdata,Symbol(data["block2_items"][1])=>vec(data["block2_values"]))
-    jdata = transform(jdata,Symbol(data["block3_items"][1])=>vec(data["block3_values"]))
-    iss = map(i -> i.phase<3 ? 0 : 1,jdata)
+    bdata = convert(Array{Int32,1},vec(data["block2_values"]))
+    jdata = transform(jdata,Symbol(data["block2_items"][1])=>bdata)
+    bdata = convert(Array{Int32,1},vec(data["block3_values"]))
+    jdata = transform(jdata,Symbol(data["block3_items"][1])=>bdata)
+    data = 0.0
+    bdata = 0.0
+    datasub = 0.0
+    iss = map(x -> x.phase<3 ? 0 : 1,jdata)
     jdata = transform(jdata,:iss=>iss)
     
     ##
     events = select(jdata,(:evlat,:evlon,:evdep,:eventid))
     events = table(unique!(rows(events)))
-    nevents = 3000
+    nevents = 4000
     ncells = 20000
     ndatap = 400_000
     ndatas_frac = 0.9
-    @sync @distributed for iter in 30:29+nrealizations
+    @sync @distributed for iter in 90:89+nrealizations
         eventsusedlist = geteventsweight(events,nevents)
         println("finish event sampling");flush(stdout)
         @info "finish event sampling $(length(eventsusedlist))"
-        jdatasub = filter(i -> i.eventid in eventsusedlist,jdata)
+        jdatasub = filter(x -> x.eventid in eventsusedlist,jdata)
         eventid = select(jdatasub,:eventid)
         newidx = indexin(eventid,unique(eventid))
+        newidx = convert(Array{Int32,1},newidx)
         jdatasub = transform(jdatasub,:eventidnew=>newidx)
 
         #sample P and S data
@@ -357,15 +392,15 @@ function main()
         jdatasubs = filter(x -> x.iss == 1, jdatasub)
         ndatas_bs = length(jdatasubs)
         nsample = ceil(ndatas_bs * ndatas_frac)
-        nsample = convert(Int64,nsample)
+        nsample = convert(Int32,nsample)
         jdatasubs = jdatasubs[unique(sample(1:ndatas_bs,nsample,ordered=true))]
         jdatasub = merge(jdatasubp,jdatasubs)
-        jdatasubp = []
-        jdatasubs = []
+        jdatasubp = 0
+        jdatasubs = 0 
 
         println("begin subspace inversion");flush(stdout)
         @info "begin subspace inversion $(length(jdatasub))"
-        subspaceinv(jdatasub,iter,ncells)
+        subspaceinv(jdatasub,iter,ncells,phases)
     end
     return nothing
 end
