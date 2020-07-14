@@ -42,29 +42,33 @@ using Distributed
 end
 
 @everywhere function subspaceinv(datasub::IndexedTable,iter::Number,ncells::Number,phases::Array{Array{String,1},1})
-    mindist = convert(Float32,2.0)
+    mindist = 2.0f0#convert(Float32,2.0)
     nlat = 512
     nlon = 1024
     nrad = 128
-    factor = 3.0
+    sparsefrac = 0.001f0
     k = 1
     
     cellsph = generate_vcells(ncells)
     cellxyz = sph2xyz(cellsph)
     kdtree = KDTree(cellxyz;leafsize=10)
     
-    row = Int32[]
-    col = Int32[]
-    values = Float32[]
-    b = Float32[]
-    dres = select(datasub,:dres)
-    q25 = factor * percentile(dres,25)
-    q75 = factor * percentile(dres,75)
-    datasub = filter(x -> (x.dres < q75) && (x.dres > q25),datasub)
-    dataidx = 0
+    #row = Int32[]
+    #col = Int32[]
+    #values = Float32[]
+    #b = Float32[]
+
+
+    dataidx = Int32(0)
     ndata = length(datasub)
     println("start sensitivity mastrix $(ndata)");flush(stdout)
     @info "start sensitivity mastrix $(ndata)"
+
+    maxnonzero = Int32(sparsefrac*ncells*ndata)
+    row = zeros(Int32,maxnonzero)
+    col = zeros(Int32,maxnonzero)
+    nonzerosall = zeros(Float32,maxnonzero)
+    b = zeros(Float32,ndata)
 
     evlatall = select(datasub,:evlat)
     evlonall = select(datasub,:evlon)
@@ -77,6 +81,7 @@ end
     issall = select(datasub,:iss)
     datasuball = select(datasub,:dres)
 
+    zeroid = 0
     for ii in 1:ndata
         evlat = evlatall[ii]
         evlon = evlonall[ii]
@@ -98,7 +103,7 @@ end
         raytakeoffangle = ray[3]
         raysph = ray[4]#convert(Array{Float32,2},ray[4])
 
-        dataidx += 1
+        dataidx += oneunit(dataidx)
         rayxyz = sph2xyz(raysph)
         idxs, _ = knn(kdtree, rayxyz, k, false)
         idxs = [x[1] for x in idxs]
@@ -107,17 +112,25 @@ end
             rowray[id] += mindist
         end
         colid = findall(x->x>0,rowray)# .+ iss*ncells
+        nnzero = length(colid)
         nonzeros = rowray[colid]
         colid = colid .+ iss*ncells
-        rowid = ones(Int32,size(colid)) .* dataidx
-        append!(col,colid)
-        append!(row,rowid)
-        append!(values,nonzeros)
+        colid = convert(Array{Int32,1},colid)
+        rowid = ones(Int32,nnzero) .* dataidx
+
+        #append!(col,colid)
+        #append!(row,rowid)
+        #append!(values,nonzeros)
+
+        col[zeroid+1:zeroid+nnzero] = colid
+        row[zeroid+1:zeroid+nnzero] = rowid
+        nonzerosall[zeroid+1:zeroid+nnzero] = nonzeros
+        zeroid = zeroid+nnzero
         
         #relocation
-        colid = zeros(Int32,4)
-        rowid = zeros(Int32,4)
-        nonzeros = zeros(Float32,4)
+        colid = zeros(Int64,4)
+        rowid = zeros(Int64,4)
+        nonzeros = zeros(Float64,4)
         deltar = 10.0
         colid[1] = 2*ncells+srcidx*4+1
         rowid[1] = dataidx
@@ -133,14 +146,27 @@ end
         rowid[4] = dataidx
         nonzeros[4] = 1.0
         
-        append!(col,colid)
-        append!(row,rowid)
-        append!(values,nonzeros)
-        append!(b,bres)
+        #append!(col,colid)
+        #append!(row,rowid)
+        #append!(values,nonzeros)
+        #append!(b,bres)
+        
+        col[zeroid+1:zeroid+4] = convert(Array{Int32,1},colid)
+        row[zeroid+1:zeroid+4] = convert(Array{Int32,1},rowid)
+        nonzerosall[zeroid+1:zeroid+4] = convert(Array{Float32,1},nonzeros)
+        zeroid = zeroid+4
+        b[dataidx] = bres
     end
 
-    println("Finishing ray tracing with nonzeros: $(length(values))");flush(stdout)
+    println("Finishing ray tracing with nonzeros: $(zeroid)");flush(stdout)
+    col = col[1:zeroid]
+    row = row[1:zeroid]
+    nonzerosall = nonzerosall[1:zeroid]
     G = sparse(row,col,values)
+
+    row = 0
+    col = 0
+    nonzerosall = 0
     
     ncol = size(G,2)
     cnorm = zeros(Float32,ncol)
@@ -157,10 +183,6 @@ end
     G = G[:,colid]
     cnorm = cnorm[colid]
 
-
-    row = 0
-    col = 0
-    values = 0
     
     damp = 1.0
     atol = 1e-4
@@ -348,9 +370,11 @@ end
 #main function
 
 function main()
-    nrealizations = 3 
+    nthreal = 5
+    nrealizations = 0 
+    factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
-    data = h5read("../randmesh_global/jointdataset/jointdata_isc.h5","data")
+    data = h5read("../iscehbdata/jointdata_isc.h5","data")
     keyss = vcat(data["block0_items"],data["block1_items"])
     datasub = vcat(data["block0_values"],data["block1_values"])
     datasub = convert(Array{Float32,2},transpose(datasub))
@@ -374,7 +398,7 @@ function main()
     ncells = 20000
     ndatap = 400_000
     ndatas_frac = 0.95
-    @sync @distributed for iter in 40:39+nrealizations
+    @sync @distributed for iter in nthreal:nthreal+nrealizations
         eventsusedlist = geteventsweight(events,nevents)
         println("finish event sampling");flush(stdout)
         @info "finish event sampling $(length(eventsusedlist))"
@@ -389,12 +413,21 @@ function main()
         ndatap_bs = length(jdatasubp)
         nsample = min(ndatap_bs,ndatap)
         jdatasubp = jdatasubp[unique(sample(1:ndatap_bs,nsample,replace=false,ordered=true))]
+        dres = select(jdatasubp,:dres)
+        q25 = factor * percentile(dres,25)
+        q75 = factor * percentile(dres,75)
+        jdatasubp = filter(x -> (x.dres < q75) && (x.dres > q25),jdatasubp)
 
         jdatasubs = filter(x -> x.iss == 1, jdatasub)
         ndatas_bs = length(jdatasubs)
         nsample = ceil(ndatas_bs * ndatas_frac)
         nsample = convert(Int32,nsample)
         jdatasubs = jdatasubs[unique(sample(1:ndatas_bs,nsample,replace=false,ordered=true))]
+        dres = select(jdatasubs,:dres)
+        q25 = factor * percentile(dres,25)
+        q75 = factor * percentile(dres,75)
+        jdatasubs = filter(x -> (x.dres < q75) && (x.dres > q25),jdatasubs)
+
         jdatasub = merge(jdatasubp,jdatasubs)
         jdatasubp = 0
         jdatasubs = 0 
