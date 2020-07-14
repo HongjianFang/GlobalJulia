@@ -34,7 +34,7 @@ using Distributed
         raypts = hcat(rad,lat,lon)
         raypts = convert(Array{Float32,2},raypts)
         rayparam = arr[1].ray_param
-        raytakeoffangle = arr[1].takeoff_angle
+        raytakeoffangle = deg2rad(arr[1].takeoff_angle)
     else 
         ifray = false
     end
@@ -169,6 +169,7 @@ end
     maxiter = 100
     x = lsmr(G,b,λ=damp, atol = atol, btol = btol,log = true)
     println(x[2])
+    println("max col no.$(length(colid))")
 
     x = x[1]
     x ./= cnorm
@@ -313,7 +314,7 @@ end
     celltheta = 2.0*pi*rand(eventcell)
     cellrad = EARTH_RADIUS .- 660.0 * rand(eventcell) 
 
-    sph = hcat(cellphi,celltheta,cellrad)
+    sph = hcat(cellrad,cellphi,celltheta)
     sph = convert(Array{Float32,2},sph)
 
     cellxyz = sph2xyz(sph)
@@ -339,7 +340,7 @@ end
     events = join(events,gd,lkey=:cellidx,rkey=:cellidx)
     eventweights = select(events,:idx_sum)
     eventid = select(events,:eventid)
-    eventsused = sample(eventid, Weights(eventweights),nevents)
+    eventsused = sample(eventid, Weights(eventweights), nevents,replace=false,ordered=true)
     return eventsused 
 end
 
@@ -369,11 +370,11 @@ function main()
     ##
     events = select(jdata,(:evlat,:evlon,:evdep,:eventid))
     events = table(unique!(rows(events)))
-    nevents = 4000
+    nevents = 5000
     ncells = 20000
     ndatap = 400_000
-    ndatas_frac = 0.9
-    @sync @distributed for iter in 90:89+nrealizations
+    ndatas_frac = 0.95
+    @sync @distributed for iter in 40:39+nrealizations
         eventsusedlist = geteventsweight(events,nevents)
         println("finish event sampling");flush(stdout)
         @info "finish event sampling $(length(eventsusedlist))"
@@ -387,13 +388,13 @@ function main()
         jdatasubp = filter(x -> x.iss == 0, jdatasub)
         ndatap_bs = length(jdatasubp)
         nsample = min(ndatap_bs,ndatap)
-        jdatasubp = jdatasubp[unique(sample(1:ndatap_bs,nsample,ordered=true))]
+        jdatasubp = jdatasubp[unique(sample(1:ndatap_bs,nsample,replace=false,ordered=true))]
 
         jdatasubs = filter(x -> x.iss == 1, jdatasub)
         ndatas_bs = length(jdatasubs)
         nsample = ceil(ndatas_bs * ndatas_frac)
         nsample = convert(Int32,nsample)
-        jdatasubs = jdatasubs[unique(sample(1:ndatas_bs,nsample,ordered=true))]
+        jdatasubs = jdatasubs[unique(sample(1:ndatas_bs,nsample,replace=false,ordered=true))]
         jdatasub = merge(jdatasubp,jdatasubs)
         jdatasubp = 0
         jdatasubs = 0 
