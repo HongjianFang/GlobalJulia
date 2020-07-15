@@ -18,29 +18,27 @@ using Distributed
 @everywhere const EARTH_CMB = 3481.0
 @everywhere const EARTH_RADIUS = 6371.0
 
-@everywhere function wrap_get_ray_paths_geo(evdep::Float32,evlat::Float32,evlon::Float32,stlat::Float32,stlon::Float32,phase_list::Array{String,1},sampleds::Float32)::Array{Float32,2}
+@everywhere function wrap_get_ray_paths_geo(evdep::Float32,evlat::Float32,evlon::Float32,stlat::Float32,stlon::Float32,phase_list::Array{String,1},sampleds::Float32)
     arr = get_ray_paths_geo(evdep,evlat,evlon,stlat,stlon,phase_list,sampleds)
-    arr = convert(Array{Float32,2},arr)
-    return arr
-    #rayparam = 0.0
-    #raytakeoffangle = 0.0
-    #ifray = true
-    ##raypts = Float32[]
-    #if length(arr)>0
-    #    lon = get(arr[1].path,"lon")   
-    #    lon = deg2rad.(lon)
-    #    lat = get(arr[1].path,"lat")   
-    #    lat = pi/2.0 .- deg2rad.(lat)
-    #    dep = get(arr[1].path,"depth")   
-    #    rad = EARTH_RADIUS .- dep .* HVR
-    #    raypts = hcat(rad,lat,lon)
-    #    raypts = convert(Array{Float32,2},raypts)
-    #    rayparam = arr[1].ray_param
-    #    raytakeoffangle = deg2rad(arr[1].takeoff_angle)
-    #else 
-    #    ifray = false
-    #end
-    #return (ifray,rayparam,raytakeoffangle,raypts)
+    rayparam = 0.0
+    raytakeoffangle = 0.0
+    ifray = true
+    #raypts = Float32[]
+    if length(arr)>0
+        lon = get(arr[1].path,"lon")   
+        lon = deg2rad.(lon)
+        lat = get(arr[1].path,"lat")   
+        lat = pi/2.0 .- deg2rad.(lat)
+        dep = get(arr[1].path,"depth")   
+        rad = EARTH_RADIUS .- dep .* HVR
+        raypts = hcat(rad,lat,lon)
+        raypts = convert(Array{Float32,2},raypts)
+        rayparam = arr[1].ray_param
+        raytakeoffangle = deg2rad(arr[1].takeoff_angle)
+    else 
+        ifray = false
+    end
+    return (ifray,rayparam,raytakeoffangle,raypts)
 end
 
 @everywhere function subspaceinv(datasub::IndexedTable,iter::Number,ncells::Number,phases::Array{Array{String,1},1})
@@ -48,7 +46,7 @@ end
     nlat = 512
     nlon = 1024
     nrad = 128
-    maxzeroray = 5000
+    #maxzeroray = 5000
     sparsefrac = 0.001f0
     k = 1
     
@@ -89,7 +87,7 @@ end
     rowidloc = zeros(Int64,4)
     nonzerosloc = zeros(Float64,4)
     rowray = zeros(Float32,ncells)
-    idxs = zeros(Int64,maxzeroray)
+    #idxs = zeros(Int64,maxzeroray)
     @inbounds for ii in 1:ndata
         evlat = evlatall[ii]
         evlon = evlonall[ii]
@@ -103,25 +101,26 @@ end
         bres = datasuball[ii]
         phase = phases[phaseno]
         ray = wrap_get_ray_paths_geo(evdep, evlat, evlon, stlat, stlon, phase, mindist)
-        ifray = Int32(ray[1,3])
-        if ifray == 0
+        ifray = ray[1]
+        if !ifray 
             continue
         end
-        rayparam = ray[1,1]
-        raytakeoffangle = ray[1,2]
+        rayparam = ray[2]
+        raytakeoffangle = ray[3]
         #raysph = ray[2:end,:]#convert(Array{Float32,2},ray[4])
+        raysph = ray[4]
 
         dataidx += oneunit(dataidx)
-        rayxyz = sph2xyz(ray[2:end,:])
+        rayxyz = sph2xyz(raysph)
         rayidx, _ = knn(kdtree, rayxyz, k, false)
-        #idxs = [x[1] for x in idxs]
-        idxs .= 0
-        raysegs = length(rayidx)
-        @inbounds for (ii,rayid) in enumerate(rayidx)
-             idxs[ii] = rayid[1]
-        end
+        idxs = [x[1] for x in rayidx]
+        #idxs .= 0
+        #raysegs = length(rayidx)
+        #@inbounds for (ii,rayid) in enumerate(rayidx)
+        #     idxs[ii] = rayid[1]
+        #end
         rowray .= 0.0f0
-        @inbounds for id in idxs[1:raysegs]
+        @inbounds for id in idxs#[1:raysegs]
             rowray[id] += mindist
         end
         colid = findall(x->x>0.0f0,rowray)# .+ iss*ncells
@@ -175,7 +174,7 @@ end
     col = col[1:zeroid]
     row = row[1:zeroid]
     nonzerosall = nonzerosall[1:zeroid]
-    G = sparse(row,col,values)
+    G = sparse(row,col,nonzerosall)
 
     row = 0
     col = 0
@@ -383,8 +382,8 @@ end
 #main function
 
 function main()
-    nthreal = 1
-    nrealizations = 1 
+    nthreal = 50
+    nrealizations = 3 
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     data = h5read("../iscehbdata/jointdata_isc.h5","data")
@@ -407,7 +406,7 @@ function main()
     ##
     events = select(jdata,(:evlat,:evlon,:evdep,:eventid))
     events = table(unique!(rows(events)))
-    nevents = 50
+    nevents = 50000
     ncells = 20000
     ndatap = 400_000
     ndatas_frac = 0.95
