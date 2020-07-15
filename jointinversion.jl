@@ -18,27 +18,29 @@ using Distributed
 @everywhere const EARTH_CMB = 3481.0
 @everywhere const EARTH_RADIUS = 6371.0
 
-@everywhere function wrap_get_ray_paths_geo(evdep::Float32,evlat::Float32,evlon::Float32,stlat::Float32,stlon::Float32,phase_list::Array{String,1},sampleds::Float32)
-    arr = get_ray_paths_geo(evdep,evlat,evlon,stlat,stlon,phase_list,true,sampleds)
-    rayparam = 0.0
-    raytakeoffangle = 0.0
-    ifray = true
-    #raypts = Float32[]
-    if length(arr)>0
-        lon = get(arr[1].path,"lon")   
-        lon = deg2rad.(lon)
-        lat = get(arr[1].path,"lat")   
-        lat = pi/2.0 .- deg2rad.(lat)
-        dep = get(arr[1].path,"depth")   
-        rad = EARTH_RADIUS .- dep .* HVR
-        raypts = hcat(rad,lat,lon)
-        raypts = convert(Array{Float32,2},raypts)
-        rayparam = arr[1].ray_param
-        raytakeoffangle = deg2rad(arr[1].takeoff_angle)
-    else 
-        ifray = false
-    end
-    return (ifray,rayparam,raytakeoffangle,raypts)
+@everywhere function wrap_get_ray_paths_geo(evdep::Float32,evlat::Float32,evlon::Float32,stlat::Float32,stlon::Float32,phase_list::Array{String,1},sampleds::Float32)::Array{Float32,2}
+    arr = get_ray_paths_geo(evdep,evlat,evlon,stlat,stlon,phase_list,sampleds)
+    arr = convert(Array{Float32,2},arr)
+    return arr
+    #rayparam = 0.0
+    #raytakeoffangle = 0.0
+    #ifray = true
+    ##raypts = Float32[]
+    #if length(arr)>0
+    #    lon = get(arr[1].path,"lon")   
+    #    lon = deg2rad.(lon)
+    #    lat = get(arr[1].path,"lat")   
+    #    lat = pi/2.0 .- deg2rad.(lat)
+    #    dep = get(arr[1].path,"depth")   
+    #    rad = EARTH_RADIUS .- dep .* HVR
+    #    raypts = hcat(rad,lat,lon)
+    #    raypts = convert(Array{Float32,2},raypts)
+    #    rayparam = arr[1].ray_param
+    #    raytakeoffangle = deg2rad(arr[1].takeoff_angle)
+    #else 
+    #    ifray = false
+    #end
+    #return (ifray,rayparam,raytakeoffangle,raypts)
 end
 
 @everywhere function subspaceinv(datasub::IndexedTable,iter::Number,ncells::Number,phases::Array{Array{String,1},1})
@@ -46,6 +48,7 @@ end
     nlat = 512
     nlon = 1024
     nrad = 128
+    maxzeroray = 5000
     sparsefrac = 0.001f0
     k = 1
     
@@ -82,7 +85,12 @@ end
     datasuball = select(datasub,:dres)
 
     zeroid = 0
-    for ii in 1:ndata
+    colidloc = zeros(Int64,4)
+    rowidloc = zeros(Int64,4)
+    nonzerosloc = zeros(Float64,4)
+    rowray = zeros(Float32,ncells)
+    idxs = zeros(Int64,maxzeroray)
+    @inbounds for ii in 1:ndata
         evlat = evlatall[ii]
         evlon = evlonall[ii]
         evdep = evdepall[ii]
@@ -95,23 +103,28 @@ end
         bres = datasuball[ii]
         phase = phases[phaseno]
         ray = wrap_get_ray_paths_geo(evdep, evlat, evlon, stlat, stlon, phase, mindist)
-        ifray = ray[1]
-        if !ifray
+        ifray = Int32(ray[1,3])
+        if ifray == 0
             continue
         end
-        rayparam = ray[2]
-        raytakeoffangle = ray[3]
-        raysph = ray[4]#convert(Array{Float32,2},ray[4])
+        rayparam = ray[1,1]
+        raytakeoffangle = ray[1,2]
+        #raysph = ray[2:end,:]#convert(Array{Float32,2},ray[4])
 
         dataidx += oneunit(dataidx)
-        rayxyz = sph2xyz(raysph)
-        idxs, _ = knn(kdtree, rayxyz, k, false)
-        idxs = [x[1] for x in idxs]
-        rowray = zeros(Float32,ncells)
-        for id in idxs
+        rayxyz = sph2xyz(ray[2:end,:])
+        rayidx, _ = knn(kdtree, rayxyz, k, false)
+        #idxs = [x[1] for x in idxs]
+        idxs .= 0
+        raysegs = length(rayidx)
+        @inbounds for (ii,rayid) in enumerate(rayidx)
+             idxs[ii] = rayid[1]
+        end
+        rowray .= 0.0f0
+        @inbounds for id in idxs[1:raysegs]
             rowray[id] += mindist
         end
-        colid = findall(x->x>0,rowray)# .+ iss*ncells
+        colid = findall(x->x>0.0f0,rowray)# .+ iss*ncells
         nnzero = length(colid)
         nonzeros = rowray[colid]
         colid = colid .+ iss*ncells
@@ -128,32 +141,32 @@ end
         zeroid = zeroid+nnzero
         
         #relocation
-        colid = zeros(Int64,4)
-        rowid = zeros(Int64,4)
-        nonzeros = zeros(Float64,4)
+        colidloc .= 0
+        rowidloc .= 0
+        nonzerosloc .= 0.0
         deltar = 10.0
-        colid[1] = 2*ncells+srcidx*4+1
-        rowid[1] = dataidx
-        nonzeros[1] = rayparam/tan(raytakeoffangle)/EARTH_RADIUS*deltar
+        colidloc[1] = 2*ncells+srcidx*4+1
+        rowidloc[1] = dataidx
+        nonzerosloc[1] = rayparam/tan(raytakeoffangle)/EARTH_RADIUS*deltar
         
-        colid[2] = 2*ncells+srcidx*4+2
-        rowid[2] = dataidx
-        nonzeros[2] = -rayparam*cos(azimulth)/EARTH_RADIUS*deltar
-        colid[3] = 2*ncells+srcidx*4+3
-        rowid[3] = dataidx
-        nonzeros[3] = rayparam*sin(azimulth)*cos(deg2rad(evlat))/EARTH_RADIUS*deltar
-        colid[4] = 2*ncells+srcidx*4+4
-        rowid[4] = dataidx
-        nonzeros[4] = 1.0
+        colidloc[2] = 2*ncells+srcidx*4+2
+        rowidloc[2] = dataidx
+        nonzerosloc[2] = -rayparam*cos(azimulth)/EARTH_RADIUS*deltar
+        colidloc[3] = 2*ncells+srcidx*4+3
+        rowidloc[3] = dataidx
+        nonzerosloc[3] = rayparam*sin(azimulth)*cos(deg2rad(evlat))/EARTH_RADIUS*deltar
+        colidloc[4] = 2*ncells+srcidx*4+4
+        rowidloc[4] = dataidx
+        nonzerosloc[4] = 1.0
         
         #append!(col,colid)
         #append!(row,rowid)
         #append!(values,nonzeros)
         #append!(b,bres)
         
-        col[zeroid+1:zeroid+4] = convert(Array{Int32,1},colid)
-        row[zeroid+1:zeroid+4] = convert(Array{Int32,1},rowid)
-        nonzerosall[zeroid+1:zeroid+4] = convert(Array{Float32,1},nonzeros)
+        col[zeroid+1:zeroid+4] = convert(Array{Int32,1},colidloc)
+        row[zeroid+1:zeroid+4] = convert(Array{Int32,1},rowidloc)
+        nonzerosall[zeroid+1:zeroid+4] = convert(Array{Float32,1},nonzerosloc)
         zeroid = zeroid+4
         b[dataidx] = bres
     end
@@ -170,7 +183,7 @@ end
     
     ncol = size(G,2)
     cnorm = zeros(Float32,ncol)
-    for icol = 1 : ncol
+    @inbounds for icol = 1 : ncol
         i = G.colptr[icol]
         k = G.colptr[icol+1] - 1
         n = i <= k ? norm(G.nzval[i:k]) : 0.0  
@@ -370,8 +383,8 @@ end
 #main function
 
 function main()
-    nthreal = 5
-    nrealizations = 0 
+    nthreal = 1
+    nrealizations = 1 
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     data = h5read("../iscehbdata/jointdata_isc.h5","data")
@@ -394,11 +407,11 @@ function main()
     ##
     events = select(jdata,(:evlat,:evlon,:evdep,:eventid))
     events = table(unique!(rows(events)))
-    nevents = 5000
+    nevents = 50
     ncells = 20000
     ndatap = 400_000
     ndatas_frac = 0.95
-    @sync @distributed for iter in nthreal:nthreal+nrealizations
+    @sync @distributed for iter in nthreal:nthreal+nrealizations-1
         eventsusedlist = geteventsweight(events,nevents)
         println("finish event sampling");flush(stdout)
         @info "finish event sampling $(length(eventsusedlist))"
