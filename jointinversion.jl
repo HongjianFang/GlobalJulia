@@ -9,6 +9,7 @@ using Distributed
 @everywhere using HDF5#: h5read,h5write,h5open
 @everywhere using JuliaDB
 @everywhere using LinearAlgebra
+@everywhere using ProgressMeter
 
 @everywhere taup = PyCall.pyimport("obspy.taup")
 @everywhere model = taup.TauPyModel(model="ak135")
@@ -88,7 +89,8 @@ end
     nonzerosloc = zeros(Float64,4)
     rowray = zeros(Float32,ncells)
     #idxs = zeros(Int64,maxzeroray)
-    @inbounds for ii in 1:ndata
+    @showprogress for ii in 1:ndata
+        #println("$(ii)th data")
         evlat = evlatall[ii]
         evlon = evlonall[ii]
         evdep = evdepall[ii]
@@ -382,8 +384,8 @@ end
 #main function
 
 function main()
-    nthreal = 50
-    nrealizations = 3 
+    nthreal = 1 
+    nrealizations = 5
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     data = h5read("../iscehbdata/jointdata_isc.h5","data")
@@ -406,7 +408,7 @@ function main()
     ##
     events = select(jdata,(:evlat,:evlon,:evdep,:eventid))
     events = table(unique!(rows(events)))
-    nevents = 50000
+    nevents = 5000
     ncells = 20000
     ndatap = 400_000
     ndatas_frac = 0.95
@@ -429,6 +431,7 @@ function main()
         q25 = factor * percentile(dres,25)
         q75 = factor * percentile(dres,75)
         jdatasubp = filter(x -> (x.dres < q75) && (x.dres > q25),jdatasubp)
+        @info "pdata $(length(jdatasubp))"
 
         jdatasubs = filter(x -> x.iss == 1, jdatasub)
         ndatas_bs = length(jdatasubs)
@@ -439,6 +442,7 @@ function main()
         q25 = factor * percentile(dres,25)
         q75 = factor * percentile(dres,75)
         jdatasubs = filter(x -> (x.dres < q75) && (x.dres > q25),jdatasubs)
+        @info "sdata $(length(jdatasubs))"
 
         jdatasub = merge(jdatasubp,jdatasubs)
         jdatasubp = 0
