@@ -24,8 +24,8 @@ using Distributed
     rayparam = 0.0
     raytakeoffangle = 0.0
     ifray = true
-    #raypts = Float32[]
-    if length(arr)>0
+    raypts = Float32[]
+    if arr != nothing
         lon = get(arr[1].path,"lon")   
         lon = deg2rad.(lon)
         lat = get(arr[1].path,"lat")   
@@ -48,7 +48,7 @@ end
     nlon = 1024
     nrad = 128
     #maxzeroray = 5000
-    sparsefrac = 0.001f0
+    sparsefrac = 0.003f0
     k = 1
     
     cellsph = generate_vcells(ncells)
@@ -89,7 +89,8 @@ end
     nonzerosloc = zeros(Float64,4)
     rowray = zeros(Float32,ncells)
     #idxs = zeros(Int64,maxzeroray)
-    @showprogress for ii in 1:ndata
+    #@showprogress for ii in 1:ndata
+    for ii in 1:ndata
         #println("$(ii)th data")
         evlat = evlatall[ii]
         evlon = evlonall[ii]
@@ -384,8 +385,8 @@ end
 #main function
 
 function main()
-    nthreal = 1 
-    nrealizations = 5
+    nthreal = 100 
+    nrealizations = 1
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     data = h5read("../iscehbdata/jointdata_isc.h5","data")
