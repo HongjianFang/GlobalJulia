@@ -90,7 +90,7 @@ end
     rowray = zeros(Float32,ncells)
     #idxs = zeros(Int64,maxzeroray)
     #@showprogress for ii in 1:ndata
-    for ii in 1:ndata
+    @inbounds for ii in 1:ndata
         #println("$(ii)th data")
         evlat = evlatall[ii]
         evlon = evlonall[ii]
@@ -205,7 +205,7 @@ end
     conlim = 100
     maxiter = 100
     x = lsmr(G,b,λ=damp, atol = atol, btol = btol,log = true)
-    println(x[2])
+    #println(x[2])
     println("max col no.$(length(colid))")
 
     x = x[1]
@@ -217,7 +217,7 @@ end
     xs = xall[ncells+1:2*ncells]
     xall = 0.0
 
-    print("begin projection matrix");flush(stdout)
+    println("begin projection matrix");flush(stdout)
     @info "begin projection matrix"
     dlat = pi/nlat
     dlon = 2*pi/nlon
@@ -236,36 +236,48 @@ end
     #lonall = reshape([yj for xj in lat for yj in lon for zj in rad], npara)
     #radall = reshape([zj for xj in lat for yj in lon for zj in rad], npara)
 
-    latall = zeros(Float32,npara)
-    lonall = zeros(Float32,npara)
-    radall = zeros(Float32,npara)
+    #latall = zeros(Float32,npara)
+    #lonall = zeros(Float32,npara)
+    #radall = zeros(Float32,npara)
+    gridxyz = zeros(Float32,3,npara)
+    colgp = ones(Int32,npara)
 
     idx = 0
+    xpts = zeros(3)
     for xj in lat
         for yj in lon
             for zj in rad
                 idx += 1
-                latall[idx] = xj
-                lonall[idx] = yj
-                radall[idx] = zj
+                #latall[idx] = xj
+                #lonall[idx] = yj
+                #radall[idx] = zj
+                xpts = @view gridxyz[:,idx]
+                xpts[1] = zj * sin(xj) * cos(yj)
+                xpts[2] = zj * sin(xj) * sin(yj)
+                xpts[3] = zj * cos(xj) 
+                #gridxyz[idx,:] .= xpts
+                #colgppt, _ = knn(kdtree, xpts, 1, false)
+                #colgp[idx] = colgppt[1]
             end
         end
     end
-    
-    gridsph = hcat(radall,latall,lonall)
-    #gridsph = convert(Array{Float32,2},gridsph)
-    gridxyz = sph2xyz(gridsph)
-    radall = 0 
-    latall = 0
-    lonall = 0
-    gridsph = 0
-    
     println("Finishing projection matrix")
+    
+    #gridsph = hcat(radall,latall,lonall)
+    #gridxyz = sph2xyz(gridsph)
+    #radall = 0 
+    #latall = 0
+    #lonall = 0
+    #gridsph = 0
+    #
+    #println("Finishing projection matrix")
     k = 1
     colgp, _ = knn(kdtree, gridxyz, k, false)
     gridxyz = 0
     colgp = [x[1] for x in colgp]
+    
     colgp = convert(Array{Int32,1},colgp)
+
     rowgp = convert(Array{Int32,1},collect(1:npara))
     valuegp = ones(Float32,npara)
     Gp = sparse(rowgp,colgp,valuegp,npara,ncells)
@@ -310,14 +322,17 @@ end
 #lat,lon,dep
 #"""
 @everywhere function geo2sph(geopts::Array{Float32,2})::Array{Float32,2}
-    lat = geopts[:,1]
-    lon = geopts[:,2]
-    depth = geopts[:,3]
+    lat = @view geopts[:,1]
+    lon = @view geopts[:,2]
+    depth = @view geopts[:,3]
     npoints = length(lat)
     sph = zeros(Float32,npoints,3)
-    sph[:,1] = -depth .+ EARTH_RADIUS 
-    sph[:,2] = -deg2rad.(lat) .+ pi/2.0  
-    sph[:,3] = deg2rad.(lon)
+    rad = @view sph[:,1]
+    lat = @view sph[:,2]    
+    lon = @view sph[:,3]
+    rad[:] = -depth .+ EARTH_RADIUS 
+    lat[:] = pi/.2 .- deg2rad.(lat) 
+    lon[:] = deg2rad.(lon)
     return sph
 end
 ##
@@ -330,14 +345,17 @@ end
 #"""
 @everywhere function sph2xyz(sph::Array{Float32,2})::Array{Float32,2}
     npoints,_ = size(sph)
-    #rad = sph[:,1]
-    #phi = sph[:,2]
-    #theta = sph[:,3]
-    xyz = zeros(Float32,npoints,3)
-    xyz[:,1] = sph[:,1] .* sin.(sph[:,2]) .* cos.(sph[:,3])
-    xyz[:,2] = sph[:,1] .* sin.(sph[:,2]) .* sin.(sph[:,3])
-    xyz[:,3] = sph[:,1] .* cos.(sph[:,2]) 
-    return transpose(xyz)
+    rad = @view sph[:,1]
+    phi = @view sph[:,2]
+    theta = @view sph[:,3]
+    xyz = zeros(Float32,3,npoints)
+    x = @view xyz[1,:]
+    y = @view xyz[2,:]
+    z = @view xyz[3,:]
+    x[:] = rad .* sin.(phi) .* cos.(theta)
+    y[:] = rad .* sin.(phi) .* sin.(theta)
+    z[:] = rad .* cos.(phi) 
+    return xyz
 end
 ##
 
@@ -369,6 +387,7 @@ end
 ##
 @everywhere function geteventsweight(events::IndexedTable,nevents::Number=100)::Array{Int32,1}
     eventsloc = hcat(select(events,:evlat),select(events,:evlon),select(events,:evdep))
+    #eventsloc = select(events,(:evlat,:evlon,:evdep))
     idxs = geteventidx(eventsloc)
     events = transform(events,:cellidx => idxs)
     gd = groupby(length,events,:cellidx)
@@ -385,8 +404,8 @@ end
 #main function
 
 function main()
-    nthreal = 100 
-    nrealizations = 1
+    nthreal = 10 
+    nrealizations = 3
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     data = h5read("../iscehbdata/jointdata_isc.h5","data")
@@ -410,6 +429,7 @@ function main()
     events = select(jdata,(:evlat,:evlon,:evdep,:eventid))
     events = table(unique!(rows(events)))
     nevents = 5000
+    #nevents = 20
     ncells = 20000
     ndatap = 400_000
     ndatas_frac = 0.95
