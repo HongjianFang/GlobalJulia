@@ -15,7 +15,7 @@ using Distributed
 @everywhere model = taup.TauPyModel(model="ak135")
 @everywhere get_ray_paths_geo = model.get_ray_paths_geo
 
-@everywhere const HVR = 2.0
+@everywhere const HVR = 1.0
 @everywhere const EARTH_CMB = 3481.0
 @everywhere const EARTH_RADIUS = 6371.0
 
@@ -115,16 +115,23 @@ end
 
         dataidx += oneunit(dataidx)
         rayxyz = sph2xyz(raysph)
-        rayidx, _ = knn(kdtree, rayxyz, k, false)
+        rayseg = diff(rayxyz,dims=2)
+        rayseg = sqrt.(rayseg[1,:].^2+rayseg[2,:].^2+rayseg[3,:].^2)
+
+        rayidx, _ = knn(kdtree, rayxyz, 1, false)
         idxs = [x[1] for x in rayidx]
         #idxs .= 0
         #raysegs = length(rayidx)
         #@inbounds for (ii,rayid) in enumerate(rayidx)
         #     idxs[ii] = rayid[1]
         #end
+        #rowray .= 0.0f0
+        #@inbounds for id in idxs#[1:raysegs]
+        #    rowray[id] += mindist
+        #end
         rowray .= 0.0f0
-        @inbounds for id in idxs#[1:raysegs]
-            rowray[id] += mindist
+        @inbounds for (iseg,id) in enumerate(idxs[1:end-1])#[1:raysegs]
+            rowray[id] += rayseg[iseg]
         end
         colid = findall(x->x>0.0f0,rowray)# .+ iss*ncells
         nnzero = length(colid)
@@ -198,7 +205,6 @@ end
     G = G[:,colid]
     cnorm = cnorm[colid]
 
-    
     damp = 1.0
     atol = 1e-4
     btol = 1e-6
