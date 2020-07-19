@@ -5,11 +5,12 @@ using Distributed
 @everywhere using StatsBase: sample,Weights,percentile
 @everywhere using IterativeSolvers: lsmr
 @everywhere using SparseArrays: sparse
-@everywhere using NearestNeighbors: KDTree,knn
+@everywhere using NearestNeighbors#: KDTree,knn,BallTree
 @everywhere using HDF5#: h5read,h5write,h5open
 @everywhere using JuliaDB
 @everywhere using LinearAlgebra
 @everywhere using ProgressMeter
+@everywhere GC.gc()
 
 @everywhere taup = PyCall.pyimport("obspy.taup")
 @everywhere model = taup.TauPyModel(model="ak135")
@@ -25,7 +26,8 @@ using Distributed
     raytakeoffangle = 0.0
     ifray = true
     raypts = Float32[]
-    if arr != nothing
+    #if arr != nothing
+    if length(arr)>0 
         lon = get(arr[1].path,"lon")   
         lon = deg2rad.(lon)
         lat = get(arr[1].path,"lat")   
@@ -53,7 +55,8 @@ end
     
     cellsph = generate_vcells(ncells)
     cellxyz = sph2xyz(cellsph)
-    kdtree = KDTree(cellxyz;leafsize=10)
+    #kdtree = KDTree(cellxyz;leafsize=10)
+    kdtree = BallTree(cellxyz, Euclidean(),leafsize = 10)
     
     #row = Int32[]
     #col = Int32[]
@@ -89,18 +92,21 @@ end
     nonzerosloc = zeros(Float64,4)
     rowray = zeros(Float32,ncells)
     #idxs = zeros(Int64,maxzeroray)
-    #@showprogress for ii in 1:ndata
-    @inbounds for ii in 1:ndata
-        #println("$(ii)th data")
+    @showprogress for ii in 1:ndata
+    #@inbounds for ii in 1:ndata
+        #if mod(ii+1,5000) == 0
+        #    #GC.gc()
+        #    println("$(ii)th data")
+        #end
         evlat = evlatall[ii]
         evlon = evlonall[ii]
         evdep = evdepall[ii]
         stlat = stlatall[ii]
         stlon = stlonall[ii]
         azimulth = azimall[ii]
-        srcidx =  eventidnewall[ii]
+        srcidx = eventidnewall[ii]
         phaseno = phaseall[ii]
-        iss =     issall[ii]
+        iss =  issall[ii]
         bres = datasuball[ii]
         phase = phases[phaseno]
         ray = wrap_get_ray_paths_geo(evdep, evlat, evlon, stlat, stlon, phase, mindist)
@@ -110,7 +116,6 @@ end
         end
         rayparam = ray[2]
         raytakeoffangle = ray[3]
-        #raysph = ray[2:end,:]#convert(Array{Float32,2},ray[4])
         raysph = ray[4]
 
         dataidx += oneunit(dataidx)
@@ -120,15 +125,6 @@ end
 
         rayidx, _ = knn(kdtree, rayxyz, 1, false)
         idxs = [x[1] for x in rayidx]
-        #idxs .= 0
-        #raysegs = length(rayidx)
-        #@inbounds for (ii,rayid) in enumerate(rayidx)
-        #     idxs[ii] = rayid[1]
-        #end
-        #rowray .= 0.0f0
-        #@inbounds for id in idxs#[1:raysegs]
-        #    rowray[id] += mindist
-        #end
         rowray .= 0.0f0
         @inbounds for (iseg,id) in enumerate(idxs[1:end-1])#[1:raysegs]
             rowray[id] += rayseg[iseg]
@@ -139,10 +135,6 @@ end
         colid = colid .+ iss*ncells
         colid = convert(Array{Int32,1},colid)
         rowid = ones(Int32,nnzero) .* dataidx
-
-        #append!(col,colid)
-        #append!(row,rowid)
-        #append!(values,nonzeros)
 
         col[zeroid+1:zeroid+nnzero] = colid
         row[zeroid+1:zeroid+nnzero] = rowid
@@ -167,11 +159,6 @@ end
         colidloc[4] = 2*ncells+srcidx*4+4
         rowidloc[4] = dataidx
         nonzerosloc[4] = 1.0
-        
-        #append!(col,colid)
-        #append!(row,rowid)
-        #append!(values,nonzeros)
-        #append!(b,bres)
         
         col[zeroid+1:zeroid+4] = convert(Array{Int32,1},colidloc)
         row[zeroid+1:zeroid+4] = convert(Array{Int32,1},rowidloc)
@@ -296,10 +283,10 @@ end
     vs = Gp*xs
     vp = convert(Array{Float32},vp)
     vs = convert(Array{Float32},vs)
-    h5open("juliadata/vp$(iter).h5","w") do file
+    h5open("juliadata/zap_vp$(iter).h5","w") do file
         write(file,"vp",vp)
     end
-    h5open("juliadata/vs$(iter).h5","w") do file
+    h5open("juliadata/zap_vs$(iter).h5","w") do file
         write(file,"vs",vs)
     end
     return nothing#vp[1]
@@ -369,6 +356,7 @@ end
 #"""
 #sample events based on their distribution
 #"""
+##
 @everywhere function geteventidx(eventsloc::Array{Float32,2},eventcell::Number = 5000)::Array{Int32,1}
 
     cellphi = acos.(rand(eventcell).*2 .- 1.0)
@@ -410,8 +398,8 @@ end
 #main function
 
 function main()
-    nthreal = 10 
-    nrealizations = 3
+    nthreal = 20 
+    nrealizations = 10
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     data = h5read("../iscehbdata/jointdata_isc.h5","data")
@@ -435,11 +423,12 @@ function main()
     events = select(jdata,(:evlat,:evlon,:evdep,:eventid))
     events = table(unique!(rows(events)))
     nevents = 5000
-    #nevents = 20
+    #nevents = 40
     ncells = 20000
     ndatap = 400_000
     ndatas_frac = 0.95
-    @sync @distributed for iter in nthreal:nthreal+nrealizations-1
+    #@sync @distributed for iter in nthreal:nthreal+nrealizations-1
+    for iter in nthreal:nthreal+nrealizations-1
         eventsusedlist = geteventsweight(events,nevents)
         println("finish event sampling");flush(stdout)
         @info "finish event sampling $(length(eventsusedlist))"
