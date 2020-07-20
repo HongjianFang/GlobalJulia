@@ -6,11 +6,11 @@ using Distributed
 @everywhere using IterativeSolvers: lsmr
 @everywhere using SparseArrays: sparse
 @everywhere using NearestNeighbors#: KDTree,knn,BallTree
-@everywhere using HDF5#: h5read,h5write,h5open
+#@everywhere using HDF5#: h5read,h5write,h5open
 @everywhere using JuliaDB
 @everywhere using LinearAlgebra
 @everywhere using ProgressMeter
-@everywhere GC.gc()
+#@everywhere GC.gc()
 
 @everywhere taup = PyCall.pyimport("obspy.taup")
 @everywhere model = taup.TauPyModel(model="ak135")
@@ -20,7 +20,9 @@ using Distributed
 @everywhere const EARTH_CMB = 3481.0
 @everywhere const EARTH_RADIUS = 6371.0
 
-@everywhere function wrap_get_ray_paths_geo(evdep::Float32,evlat::Float32,evlon::Float32,stlat::Float32,stlon::Float32,phase_list::Array{String,1},sampleds::Float32)
+@everywhere function wrap_get_ray_paths_geo(evdep::Float32,evlat::Float32,
+                        evlon::Float32,stlat::Float32,stlon::Float32,
+                        phase_list::Array{String,1},sampleds::Float32)
     arr = get_ray_paths_geo(evdep,evlat,evlon,stlat,stlon,phase_list,sampleds)
     rayparam = 0.0
     raytakeoffangle = 0.0
@@ -44,12 +46,12 @@ using Distributed
     return (ifray,rayparam,raytakeoffangle,raypts)
 end
 
-@everywhere function subspaceinv(datasub::IndexedTable,iter::Number,ncells::Number,phases::Array{Array{String,1},1})
-    mindist = 2.0f0#convert(Float32,2.0)
+@everywhere function subspaceinv(datasub::IndexedTable,iter::Number,
+                    ncells::Number,phases::Array{Array{String,1},1})
+    mindist = 2.0f0
     nlat = 512
     nlon = 1024
     nrad = 128
-    #maxzeroray = 5000
     sparsefrac = 0.003f0
     k = 1
     
@@ -80,7 +82,7 @@ end
     evdepall = select(datasub,:evdep)
     stlatall = select(datasub,:stlat)
     stlonall = select(datasub,:stlon)
-    azimall = select(datasub,:azim)
+    azimall =  select(datasub,:azim)
     eventidnewall = select(datasub,:eventidnew)
     phaseall = select(datasub,:phase)
     issall = select(datasub,:iss)
@@ -91,11 +93,11 @@ end
     rowidloc = zeros(Int64,4)
     nonzerosloc = zeros(Float64,4)
     rowray = zeros(Float32,ncells)
-    #idxs = zeros(Int64,maxzeroray)
-    @showprogress for ii in 1:ndata
-    #@inbounds for ii in 1:ndata
+
+    #@showprogress for ii in 1:ndata
+    for ii in 1:ndata
         #if mod(ii+1,5000) == 0
-        #    #GC.gc()
+        #    GC.gc()
         #    println("$(ii)th data")
         #end
         evlat = evlatall[ii]
@@ -108,8 +110,11 @@ end
         phaseno = phaseall[ii]
         iss =  issall[ii]
         bres = datasuball[ii]
-        phase = phases[phaseno]
-        ray = wrap_get_ray_paths_geo(evdep, evlat, evlon, stlat, stlon, phase, mindist)
+        phasew = phases[phaseno]
+
+        #phasew = ["P"]
+        ray = wrap_get_ray_paths_geo(evdep, evlat, evlon, stlat, 
+                                    stlon, phasew, mindist)
         ifray = ray[1]
         if !ifray 
             continue
@@ -117,6 +122,7 @@ end
         rayparam = ray[2]
         raytakeoffangle = ray[3]
         raysph = ray[4]
+        #println("$(ii)th data",size(raysph))
 
         dataidx += oneunit(dataidx)
         rayxyz = sph2xyz(raysph)
@@ -168,6 +174,7 @@ end
     end
 
     println("Finishing ray tracing with nonzeros: $(zeroid)");flush(stdout)
+    b = b[1:dataidx]
     col = col[1:zeroid]
     row = row[1:zeroid]
     nonzerosall = nonzerosall[1:zeroid]
@@ -302,7 +309,9 @@ end
     cellphi = acos.(rand(ncells).*2 .- 1.0)# .- pi/2.0
     celltheta = 2.0*pi*rand(ncells)
     stretchradialcmb = ( EARTH_RADIUS - EARTH_CMB ) .* HVR
-    cellrad =  stretchradialcmb .* rand(ncells) .+ EARTH_RADIUS .- stretchradialcmb
+    #cellrad =  stretchradialcmb .* rand(ncells) .+ EARTH_RADIUS .- stretchradialcmb
+    cellrad =  stretchradialcmb .* rand(ncells*10) .+ EARTH_RADIUS .- stretchradialcmb
+    cellrad = sample(cellrad, Weights(cellrad.^2), ncells,replace=false)
     cellptssph = hcat(cellrad,cellphi,celltheta)
     cellptssph = convert(Array{Float32,2},cellptssph)
     return cellptssph
@@ -398,37 +407,21 @@ end
 #main function
 
 function main()
-    nthreal = 20 
-    nrealizations = 10
+    nthreal = 1 
+    nrealizations = 4
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
-    data = h5read("../iscehbdata/jointdata_isc.h5","data")
-    keyss = vcat(data["block0_items"],data["block1_items"])
-    datasub = vcat(data["block0_values"],data["block1_values"])
-    datasub = convert(Array{Float32,2},transpose(datasub))
-    jdata = table(datasub[:,1],datasub[:,2],datasub[:,3],datasub[:,4],
-                  datasub[:,5],datasub[:,6],datasub[:,7],datasub[:,8];
-                  names=[Symbol(ikey) for ikey in keyss])
-    bdata = convert(Array{Int32,1},vec(data["block2_values"]))
-    jdata = transform(jdata,Symbol(data["block2_items"][1])=>bdata)
-    bdata = convert(Array{Int32,1},vec(data["block3_values"]))
-    jdata = transform(jdata,Symbol(data["block3_items"][1])=>bdata)
-    data = 0.0
-    bdata = 0.0
-    datasub = 0.0
-    iss = map(x -> x.phase<3 ? 0 : 1,jdata)
-    jdata = transform(jdata,:iss=>iss)
+    jdata = load("../iscehbdata/allbodydata")
     
     ##
     events = select(jdata,(:evlat,:evlon,:evdep,:eventid))
     events = table(unique!(rows(events)))
     nevents = 5000
-    #nevents = 40
     ncells = 20000
     ndatap = 400_000
     ndatas_frac = 0.95
-    #@sync @distributed for iter in nthreal:nthreal+nrealizations-1
-    for iter in nthreal:nthreal+nrealizations-1
+    @sync @distributed for iter in nthreal:nthreal+nrealizations-1
+    #for iter in nthreal:nthreal+nrealizations-1
         eventsusedlist = geteventsweight(events,nevents)
         println("finish event sampling");flush(stdout)
         @info "finish event sampling $(length(eventsusedlist))"
@@ -444,6 +437,7 @@ function main()
         nsample = min(ndatap_bs,ndatap)
         jdatasubp = jdatasubp[unique(sample(1:ndatap_bs,nsample,replace=false,ordered=true))]
         dres = select(jdatasubp,:dres)
+        @info "pdata before $(length(dres))"
         q25 = factor * percentile(dres,25)
         q75 = factor * percentile(dres,75)
         jdatasubp = filter(x -> (x.dres < q75) && (x.dres > q25),jdatasubp)
@@ -455,6 +449,7 @@ function main()
         nsample = convert(Int32,nsample)
         jdatasubs = jdatasubs[unique(sample(1:ndatas_bs,nsample,replace=false,ordered=true))]
         dres = select(jdatasubs,:dres)
+        @info "sdata before $(length(dres))"
         q25 = factor * percentile(dres,25)
         q75 = factor * percentile(dres,75)
         jdatasubs = filter(x -> (x.dres < q75) && (x.dres > q25),jdatasubs)
@@ -466,6 +461,8 @@ function main()
 
         println("begin subspace inversion");flush(stdout)
         @info "begin subspace inversion $(length(jdatasub))"
+        jdatasub = reindex(jdatasub, (:iss, :evlat, :evlon,:evdep,:stlat,
+                            :stlon))
         subspaceinv(jdatasub,iter,ncells,phases)
     end
     return nothing
