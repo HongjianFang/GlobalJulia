@@ -6,11 +6,11 @@ using Distributed
 @everywhere using IterativeSolvers: lsmr
 @everywhere using SparseArrays: sparse
 @everywhere using NearestNeighbors#: KDTree,knn,BallTree
-#@everywhere using HDF5#: h5read,h5write,h5open
+@everywhere using HDF5#: h5read,h5write,h5open
 @everywhere using JuliaDB
 @everywhere using LinearAlgebra
 @everywhere using ProgressMeter
-#@everywhere GC.gc()
+@everywhere GC.gc()
 
 @everywhere taup = PyCall.pyimport("obspy.taup")
 @everywhere model = taup.TauPyModel(model="ak135")
@@ -43,12 +43,14 @@ using Distributed
     else 
         ifray = false
     end
+    GC.gc()
     return (ifray,rayparam,raytakeoffangle,raypts)
 end
 
 @everywhere function subspaceinv(datasub::IndexedTable,iter::Number,
                     ncells::Number,phases::Array{Array{String,1},1})
     mindist = 2.0f0
+    weight_s = 0.1
     nlat = 512
     nlon = 1024
     nrad = 128
@@ -60,12 +62,6 @@ end
     #kdtree = KDTree(cellxyz;leafsize=10)
     kdtree = BallTree(cellxyz, Euclidean(),leafsize = 10)
     
-    #row = Int32[]
-    #col = Int32[]
-    #values = Float32[]
-    #b = Float32[]
-
-
     dataidx = Int32(0)
     ndata = length(datasub)
     println("start sensitivity mastrix $(ndata)");flush(stdout)
@@ -96,10 +92,6 @@ end
 
     #@showprogress for ii in 1:ndata
     for ii in 1:ndata
-        #if mod(ii+1,5000) == 0
-        #    GC.gc()
-        #    println("$(ii)th data")
-        #end
         evlat = evlatall[ii]
         evlon = evlonall[ii]
         evdep = evdepall[ii]
@@ -137,14 +129,16 @@ end
         end
         colid = findall(x->x>0.0f0,rowray)# .+ iss*ncells
         nnzero = length(colid)
-        nonzeros = rowray[colid]
         colid = colid .+ iss*ncells
+        weight = weight_s * iss
+        nonzeros = rowray[colid].*weight
         colid = convert(Array{Int32,1},colid)
         rowid = ones(Int32,nnzero) .* dataidx
 
         col[zeroid+1:zeroid+nnzero] = colid
         row[zeroid+1:zeroid+nnzero] = rowid
         nonzerosall[zeroid+1:zeroid+nnzero] = nonzeros
+        b[dataidx] = bres*weight
         zeroid = zeroid+nnzero
         
         #relocation
@@ -170,7 +164,6 @@ end
         row[zeroid+1:zeroid+4] = convert(Array{Int32,1},rowidloc)
         nonzerosall[zeroid+1:zeroid+4] = convert(Array{Float32,1},nonzerosloc)
         zeroid = zeroid+4
-        b[dataidx] = bres
     end
 
     println("Finishing ray tracing with nonzeros: $(zeroid)");flush(stdout)
@@ -407,8 +400,8 @@ end
 #main function
 
 function main()
-    nthreal = 1 
-    nrealizations = 4
+    nthreal = 40 
+    nrealizations = 5
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     jdata = load("../iscehbdata/allbodydata")
