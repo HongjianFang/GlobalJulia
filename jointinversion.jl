@@ -128,17 +128,20 @@ end
             rowray[id] += rayseg[iseg]
         end
         colid = findall(x->x>0.0f0,rowray)# .+ iss*ncells
+        #weight = 1.0#weight_s * iss
+        #if iss == 1
+        #    weight = weight_s
+        #end
+        nonzeros = rowray[colid]#.*weight
         nnzero = length(colid)
         colid = colid .+ iss*ncells
-        weight = weight_s * iss
-        nonzeros = rowray[colid].*weight
         colid = convert(Array{Int32,1},colid)
         rowid = ones(Int32,nnzero) .* dataidx
 
         col[zeroid+1:zeroid+nnzero] = colid
         row[zeroid+1:zeroid+nnzero] = rowid
         nonzerosall[zeroid+1:zeroid+nnzero] = nonzeros
-        b[dataidx] = bres*weight
+        b[dataidx] = bres#*weight
         zeroid = zeroid+nnzero
         
         #relocation
@@ -192,13 +195,13 @@ end
     G = G[:,colid]
     cnorm = cnorm[colid]
 
-    damp = 1.0
+    damp = 2.0
     atol = 1e-4
     btol = 1e-6
     conlim = 100
     maxiter = 100
     x = lsmr(G,b,λ=damp, atol = atol, btol = btol,log = true)
-    #println(x[2])
+    println(x[2])
     println("max col no.$(length(colid))")
 
     x = x[1]
@@ -283,10 +286,10 @@ end
     vs = Gp*xs
     vp = convert(Array{Float32},vp)
     vs = convert(Array{Float32},vs)
-    h5open("juliadata/zap_vp$(iter).h5","w") do file
+    h5open("juliadata/eofe_vp$(iter).h5","w") do file
         write(file,"vp",vp)
     end
-    h5open("juliadata/zap_vs$(iter).h5","w") do file
+    h5open("juliadata/eofe_vs$(iter).h5","w") do file
         write(file,"vs",vs)
     end
     return nothing#vp[1]
@@ -401,7 +404,7 @@ end
 
 function main()
     nthreal = 40 
-    nrealizations = 5
+    nrealizations = 10
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     jdata = load("../iscehbdata/allbodydata")
