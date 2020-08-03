@@ -50,6 +50,7 @@ end
 @everywhere function subspaceinv(datasub::IndexedTable,iter::Number,
                     ncells::Number,phases::Array{Array{String,1},1})
     mindist = 2.0f0
+    threshold = 0.2
     weight_s = 0.1
     nlat = 512
     nlon = 1024
@@ -132,17 +133,18 @@ end
         #if iss == 1
         #    weight = weight_s
         #end
-        nonzeros = rowray[colid]#.*weight
+        weight = 1.0/(1+0.05*exp(bres^2*threshold))
+        b[dataidx] = bres*weight
+        nonzeros = rowray[colid].*weight
         nnzero = length(colid)
         colid = colid .+ iss*ncells
-        colid = convert(Array{Int32,1},colid)
-        rowid = ones(Int32,nnzero) .* dataidx
+        #colid = convert(Array{Int32,1},colid)
+        #rowid = ones(Int32,nnzero) .* dataidx
 
-        col[zeroid+1:zeroid+nnzero] = colid
-        row[zeroid+1:zeroid+nnzero] = rowid
-        nonzerosall[zeroid+1:zeroid+nnzero] = nonzeros
-        b[dataidx] = bres#*weight
-        zeroid = zeroid+nnzero
+        #col[zeroid+1:zeroid+nnzero] = colid
+        #row[zeroid+1:zeroid+nnzero] = rowid
+        #nonzerosall[zeroid+1:zeroid+nnzero] = nonzeros
+        #zeroid = zeroid+nnzero
         
         #relocation
         colidloc .= 0
@@ -163,10 +165,19 @@ end
         rowidloc[4] = dataidx
         nonzerosloc[4] = 1.0
         
-        col[zeroid+1:zeroid+4] = convert(Array{Int32,1},colidloc)
-        row[zeroid+1:zeroid+4] = convert(Array{Int32,1},rowidloc)
-        nonzerosall[zeroid+1:zeroid+4] = convert(Array{Float32,1},nonzerosloc)
-        zeroid = zeroid+4
+        #col[zeroid+1:zeroid+4] = convert(Array{Int32,1},colidloc)
+        #row[zeroid+1:zeroid+4] = convert(Array{Int32,1},rowidloc)
+        #nonzerosall[zeroid+1:zeroid+4] = convert(Array{Float32,1},nonzerosloc)
+        #zeroid = zeroid+4
+
+        colid = convert(Array{Int32,1},vcat(colid,colidloc))
+        rowid = ones(Int32,nnzero+4) .* dataidx
+        nonzeros = convert(Array{Float32,1},vcat(nonzeros,nonzerosloc)*weight)
+
+        col[zeroid+1:zeroid+nnzero+4] = colid
+        row[zeroid+1:zeroid+nnzero+4] = rowid
+        nonzerosall[zeroid+1:zeroid+nnzero+4] = nonzeros
+        zeroid = zeroid+nnzero+4
     end
 
     println("Finishing ray tracing with nonzeros: $(zeroid)");flush(stdout)
@@ -362,7 +373,7 @@ end
 #sample events based on their distribution
 #"""
 ##
-@everywhere function geteventidx(eventsloc::Array{Float32,2},eventcell::Number = 5000)::Array{Int32,1}
+@everywhere function geteventidx(eventsloc::Array{Float32,2},eventcell::Number = 100000)::Array{Int32,1}
 
     cellphi = acos.(rand(eventcell).*2 .- 1.0)
     celltheta = 2.0*pi*rand(eventcell)
@@ -403,8 +414,8 @@ end
 #main function
 
 function main()
-    nthreal = 40 
-    nrealizations = 10
+    nthreal = 60 
+    nrealizations = 10 
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     jdata = load("../iscehbdata/allbodydata")
@@ -412,9 +423,9 @@ function main()
     ##
     events = select(jdata,(:evlat,:evlon,:evdep,:eventid))
     events = table(unique!(rows(events)))
-    nevents = 5000
+    nevents = 9000
     ncells = 20000
-    ndatap = 400_000
+    ndatap = 100_000
     ndatas_frac = 0.95
     @sync @distributed for iter in nthreal:nthreal+nrealizations-1
     #for iter in nthreal:nthreal+nrealizations-1
@@ -434,8 +445,10 @@ function main()
         jdatasubp = jdatasubp[unique(sample(1:ndatap_bs,nsample,replace=false,ordered=true))]
         dres = select(jdatasubp,:dres)
         @info "pdata before $(length(dres))"
-        q25 = factor * percentile(dres,25)
-        q75 = factor * percentile(dres,75)
+        #q25 = factor * percentile(dres,25)
+        #q75 = factor * percentile(dres,75)
+        q25 = -10.0
+        q75 = 10.0
         jdatasubp = filter(x -> (x.dres < q75) && (x.dres > q25),jdatasubp)
         @info "pdata $(length(jdatasubp))"
 
@@ -446,8 +459,8 @@ function main()
         jdatasubs = jdatasubs[unique(sample(1:ndatas_bs,nsample,replace=false,ordered=true))]
         dres = select(jdatasubs,:dres)
         @info "sdata before $(length(dres))"
-        q25 = factor * percentile(dres,25)
-        q75 = factor * percentile(dres,75)
+        #q25 = factor * percentile(dres,25)
+        #q75 = factor * percentile(dres,75)
         jdatasubs = filter(x -> (x.dres < q75) && (x.dres > q25),jdatasubs)
         @info "sdata $(length(jdatasubs))"
 
