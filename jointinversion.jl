@@ -50,6 +50,7 @@ end
 @everywhere function subspaceinv(datasub::IndexedTable,iter::Number,
                     ncells::Number,phases::Array{Array{String,1},1})
     mindist = 2.0f0
+    threshold = 0.2
     weight_s = 0.1
     nlat = 512
     nlon = 1024
@@ -133,17 +134,18 @@ end
         #if iss == 1
         #    weight = weight_s
         #end
-        nonzeros = rowray[colid]#.*weight
+        weight = 1.0/(1+0.05*exp(bres^2*threshold))
+        b[dataidx] = bres*weight
+        nonzeros = rowray[colid].*weight
         nnzero = length(colid)
         colid = colid .+ iss*ncells
-        colid = convert(Array{Int32,1},colid)
-        rowid = ones(Int32,nnzero) .* dataidx
+        #colid = convert(Array{Int32,1},colid)
+        #rowid = ones(Int32,nnzero) .* dataidx
 
-        col[zeroid+1:zeroid+nnzero] = colid
-        row[zeroid+1:zeroid+nnzero] = rowid
-        nonzerosall[zeroid+1:zeroid+nnzero] = nonzeros
-        b[dataidx] = bres#*weight
-        zeroid = zeroid+nnzero
+        #col[zeroid+1:zeroid+nnzero] = colid
+        #row[zeroid+1:zeroid+nnzero] = rowid
+        #nonzerosall[zeroid+1:zeroid+nnzero] = nonzeros
+        #zeroid = zeroid+nnzero
         
         #relocation
         colidloc .= 0
@@ -165,10 +167,19 @@ end
         rowidloc[4] = dataidx
         nonzerosloc[4] = 1.0
         
-        col[zeroid+1:zeroid+4] = convert(Array{Int32,1},colidloc)
-        row[zeroid+1:zeroid+4] = convert(Array{Int32,1},rowidloc)
-        nonzerosall[zeroid+1:zeroid+4] = convert(Array{Float32,1},nonzerosloc)
-        zeroid = zeroid+4
+        #col[zeroid+1:zeroid+4] = convert(Array{Int32,1},colidloc)
+        #row[zeroid+1:zeroid+4] = convert(Array{Int32,1},rowidloc)
+        #nonzerosall[zeroid+1:zeroid+4] = convert(Array{Float32,1},nonzerosloc)
+        #zeroid = zeroid+4
+
+        colid = convert(Array{Int32,1},vcat(colid,colidloc))
+        rowid = ones(Int32,nnzero+4) .* dataidx
+        nonzeros = convert(Array{Float32,1},vcat(nonzeros,nonzerosloc)*weight)
+
+        col[zeroid+1:zeroid+nnzero+4] = colid
+        row[zeroid+1:zeroid+nnzero+4] = rowid
+        nonzerosall[zeroid+1:zeroid+nnzero+4] = nonzeros
+        zeroid = zeroid+nnzero+4
     end
 
     println("Finishing ray tracing with nonzeros: $(zeroid)");flush(stdout)
