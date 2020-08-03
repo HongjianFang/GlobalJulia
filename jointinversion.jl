@@ -110,6 +110,7 @@ end
         ifray = ray[1]
         if !ifray 
             continue
+            println("$(ii)th data")
         end
         rayparam = ray[2]
         raytakeoffangle = ray[3]
@@ -158,7 +159,8 @@ end
         nonzerosloc[2] = -rayparam*cos(azimulth)/EARTH_RADIUS*deltar
         colidloc[3] = 2*ncells+srcidx*4+3
         rowidloc[3] = dataidx
-        nonzerosloc[3] = rayparam*sin(azimulth)*cos(deg2rad(evlat))/EARTH_RADIUS*deltar
+        nonzerosloc[3] = rayparam*sin(azimulth)*cos(deg2rad(evlat))/
+                         EARTH_RADIUS*deltar
         colidloc[4] = 2*ncells+srcidx*4+4
         rowidloc[4] = dataidx
         nonzerosloc[4] = 1.0
@@ -195,7 +197,7 @@ end
     G = G[:,colid]
     cnorm = cnorm[colid]
 
-    damp = 2.0
+    damp = 5.0
     atol = 1e-4
     btol = 1e-6
     conlim = 100
@@ -286,10 +288,10 @@ end
     vs = Gp*xs
     vp = convert(Array{Float32},vp)
     vs = convert(Array{Float32},vs)
-    h5open("juliadata/eofe_vp$(iter).h5","w") do file
+    h5open("juliadata/zap_vp$(iter).h5","w") do file
         write(file,"vp",vp)
     end
-    h5open("juliadata/eofe_vs$(iter).h5","w") do file
+    h5open("juliadata/zap_vs$(iter).h5","w") do file
         write(file,"vs",vs)
     end
     return nothing#vp[1]
@@ -305,8 +307,10 @@ end
     cellphi = acos.(rand(ncells).*2 .- 1.0)# .- pi/2.0
     celltheta = 2.0*pi*rand(ncells)
     stretchradialcmb = ( EARTH_RADIUS - EARTH_CMB ) .* HVR
-    #cellrad =  stretchradialcmb .* rand(ncells) .+ EARTH_RADIUS .- stretchradialcmb
-    cellrad =  stretchradialcmb .* rand(ncells*10) .+ EARTH_RADIUS .- stretchradialcmb
+    #cellrad =  stretchradialcmb .* rand(ncells) .+ 
+                EARTH_RADIUS .- stretchradialcmb
+    cellrad =  stretchradialcmb .* rand(ncells*10) .+ 
+                EARTH_RADIUS .- stretchradialcmb
     cellrad = sample(cellrad, Weights(cellrad.^2), ncells,replace=false)
     cellptssph = hcat(cellrad,cellphi,celltheta)
     cellptssph = convert(Array{Float32,2},cellptssph)
@@ -362,8 +366,8 @@ end
 #sample events based on their distribution
 #"""
 ##
-@everywhere function geteventidx(eventsloc::Array{Float32,2},eventcell::Number = 5000)::Array{Int32,1}
-
+@everywhere function geteventidx(eventsloc::Array{Float32,2},
+                                eventcell::Number = 100000)::Array{Int32,1}
     cellphi = acos.(rand(eventcell).*2 .- 1.0)
     celltheta = 2.0*pi*rand(eventcell)
     cellrad = EARTH_RADIUS .- 660.0 * rand(eventcell) 
@@ -384,8 +388,10 @@ end
 end
 
 ##
-@everywhere function geteventsweight(events::IndexedTable,nevents::Number=100)::Array{Int32,1}
-    eventsloc = hcat(select(events,:evlat),select(events,:evlon),select(events,:evdep))
+@everywhere function geteventsweight(events::IndexedTable,
+                                    nevents::Number=100)::Array{Int32,1}
+    eventsloc = hcat(select(events,:evlat),
+                    select(events,:evlon),select(events,:evdep))
     #eventsloc = select(events,(:evlat,:evlon,:evdep))
     idxs = geteventidx(eventsloc)
     events = transform(events,:cellidx => idxs)
@@ -395,7 +401,8 @@ end
     events = join(events,gd,lkey=:cellidx,rkey=:cellidx)
     eventweights = select(events,:idx_sum)
     eventid = select(events,:eventid)
-    eventsused = sample(eventid, Weights(eventweights), nevents,replace=false,ordered=true)
+    eventsused = sample(eventid, Weights(eventweights), 
+                        nevents,replace=false,ordered=true)
     return eventsused 
 end
 
@@ -403,8 +410,8 @@ end
 #main function
 
 function main()
-    nthreal = 40 
-    nrealizations = 10
+    nthreal = 1
+    nrealizations = 5 
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     jdata = load("../iscehbdata/allbodydata")
@@ -412,9 +419,9 @@ function main()
     ##
     events = select(jdata,(:evlat,:evlon,:evdep,:eventid))
     events = table(unique!(rows(events)))
-    nevents = 5000
+    nevents = 9000
     ncells = 20000
-    ndatap = 400_000
+    ndatap = 100_000
     ndatas_frac = 0.95
     @sync @distributed for iter in nthreal:nthreal+nrealizations-1
     #for iter in nthreal:nthreal+nrealizations-1
@@ -431,11 +438,14 @@ function main()
         jdatasubp = filter(x -> x.iss == 0, jdatasub)
         ndatap_bs = length(jdatasubp)
         nsample = min(ndatap_bs,ndatap)
-        jdatasubp = jdatasubp[unique(sample(1:ndatap_bs,nsample,replace=false,ordered=true))]
+        jdatasubp = jdatasubp[unique(sample(1:ndatap_bs,nsample,
+                            replace=false,ordered=true))]
         dres = select(jdatasubp,:dres)
         @info "pdata before $(length(dres))"
-        q25 = factor * percentile(dres,25)
-        q75 = factor * percentile(dres,75)
+        #q25 = factor * percentile(dres,25)
+        #q75 = factor * percentile(dres,75)
+        q25 = -10.0
+        q75 = 10.0
         jdatasubp = filter(x -> (x.dres < q75) && (x.dres > q25),jdatasubp)
         @info "pdata $(length(jdatasubp))"
 
@@ -443,15 +453,18 @@ function main()
         ndatas_bs = length(jdatasubs)
         nsample = ceil(ndatas_bs * ndatas_frac)
         nsample = convert(Int32,nsample)
-        jdatasubs = jdatasubs[unique(sample(1:ndatas_bs,nsample,replace=false,ordered=true))]
+        jdatasubs = jdatasubs[unique(sample(1:ndatas_bs,nsample,
+                            replace=false,ordered=true))]
         dres = select(jdatasubs,:dres)
         @info "sdata before $(length(dres))"
-        q25 = factor * percentile(dres,25)
-        q75 = factor * percentile(dres,75)
+        #q25 = factor * percentile(dres,25)
+        #q75 = factor * percentile(dres,75)
+        @info "percentile $(q25) and $(q75)"
         jdatasubs = filter(x -> (x.dres < q75) && (x.dres > q25),jdatasubs)
         @info "sdata $(length(jdatasubs))"
 
         jdatasub = merge(jdatasubp,jdatasubs)
+        #jdatasub = jdatasubp
         jdatasubp = 0
         jdatasubs = 0 
 
