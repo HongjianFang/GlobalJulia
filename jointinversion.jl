@@ -57,6 +57,7 @@ end
     nrad = 128
     sparsefrac = 0.003f0
     k = 1
+    columnnorm = 0
     
     cellsph = generate_vcells(ncells)
     cellxyz = sph2xyz(cellsph)
@@ -187,11 +188,12 @@ end
     nonzerosall = nonzerosall[1:zeroid]
     G = sparse(row,col,nonzerosall)
 
-    row = 0
-    col = 0
-    nonzerosall = 0
+    row = nothing
+    col = nothing
+    nonzerosall = nothing
     
     ncol = size(G,2)
+    if columnnorm == 1
     cnorm = zeros(Float32,ncol)
     @inbounds for icol = 1 : ncol
         i = G.colptr[icol]
@@ -205,6 +207,7 @@ end
     colid = findall(x->x>normthresh,cnorm)# .+ iss*ncells
     G = G[:,colid]
     cnorm = cnorm[colid]
+    end
 
     damp = 2.0
     atol = 1e-4
@@ -216,13 +219,18 @@ end
     println("max col no.$(length(colid))")
 
     x = x[1]
+    xall = zeros(Float32,ncol)
+    if columnnorm == 1
     x ./= cnorm
     x = convert(Array{Float32,1},x)
-    xall = zeros(Float32,ncol)
     xall[colid] = x
+    else
+    x = convert(Array{Float32,1},x)
+    xall = x
+    end
     xp = xall[1:ncells]
     xs = xall[ncells+1:2*ncells]
-    xall = 0.0
+    xall = nothing
 
     println("begin projection matrix");flush(stdout)
     @info "begin projection matrix"
@@ -414,7 +422,7 @@ end
 #main function
 
 function main()
-    nthreal = 60 
+    nthreal = 70 
     nrealizations = 10 
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
