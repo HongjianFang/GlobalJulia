@@ -28,7 +28,6 @@ using Distributed
     raytakeoffangle = 0.0
     ifray = true
     raypts = Float32[]
-    #if arr != nothing
     if length(arr)>0 
         lon = get(arr[1].path,"lon")   
         lon = deg2rad.(lon)
@@ -37,7 +36,6 @@ using Distributed
         dep = get(arr[1].path,"depth")   
         rad = EARTH_RADIUS .- dep .* HVR
         raypts = hcat(rad,lat,lon)
-        raypts = convert(Array{Float32,2},raypts)
         rayparam = arr[1].ray_param
         raytakeoffangle = deg2rad(arr[1].takeoff_angle)
     else 
@@ -60,13 +58,12 @@ end
     columnnorm = 0
     
     cellsph = generate_vcells(ncells)
-    cellxyz = sph2xyz(cellsph)
-    #kdtree = KDTree(cellxyz;leafsize=10)
-    kdtree = BallTree(cellxyz, Euclidean(),leafsize = 10)
+    sph2xyz!(cellsph)
+    kdtree = KDTree(transpose(cellsph);leafsize=10)
+    #kdtree = BallTree(transpose(cellxyz), Euclidean(),leafsize = 10)
     
     dataidx = Int32(0)
     ndata = length(datasub)
-    println("start sensitivity mastrix $(ndata)");flush(stdout)
     @info "start sensitivity mastrix $(ndata)"
 
     maxnonzero = Int32(sparsefrac*ncells*ndata)
@@ -90,7 +87,7 @@ end
     colidloc = zeros(Int64,4)
     rowidloc = zeros(Int64,4)
     nonzerosloc = zeros(Float64,4)
-    rowray = zeros(Float32,ncells)
+    rowray = zeros(Float64,ncells)
 
     #@showprogress for ii in 1:ndata
     for ii in 1:ndata
@@ -106,49 +103,39 @@ end
         bres = datasuball[ii]
         phasew = phases[phaseno]
 
-        #phasew = ["P"]
         ray = wrap_get_ray_paths_geo(evdep, evlat, evlon, stlat, 
                                     stlon, phasew, mindist)
         ifray = ray[1]
         if !ifray 
             continue
-            println("$(ii)th data")
+            @info "$(ii)th data"
         end
         rayparam = ray[2]
         raytakeoffangle = ray[3]
         raysph = ray[4]
-        #println("$(ii)th data",size(raysph))
 
         dataidx += oneunit(dataidx)
-        rayxyz = sph2xyz(raysph)
-        rayseg = diff(rayxyz,dims=2)
-        rayseg = sqrt.(rayseg[1,:].^2+rayseg[2,:].^2+rayseg[3,:].^2)
+        sph2xyz!(raysph)
+        nseg = size(raysph,1)
+        raydiffsub = diff(raysph,dims=1)
+        rayseg = sqrt.(raydiffsub[:,1].^2+
+                                  raydiffsub[:,2].^2+
+                                  raydiffsub[:,3].^2)
 
-        rayidx, _ = knn(kdtree, rayxyz, 1, false)
-        idxs = [x[1] for x in rayidx]
+        rayidx, _ = knn(kdtree, transpose(raysph), 1, false)
+        idxssub = [x[1] for x in rayidx]
         rowray .= 0.0f0
-        @inbounds for (iseg,id) in enumerate(idxs[1:end-1])#[1:raysegs]
-            rowray[id] += rayseg[iseg]
+        @inbounds for ii = 1:nseg-1
+        rowray[idxssub[ii]] += rayseg[ii]
         end
-        colid = findall(x->x>0.0f0,rowray)# .+ iss*ncells
-        #weight = 1.0#weight_s * iss
-        #if iss == 1
-        #    weight = weight_s
-        #end
+        colid = findall(x->x>0.0f0,rowray)
+        
         weight = 1.0/(1+0.05*exp(bres^2*threshold))
         b[dataidx] = bres*weight
         nonzeros = rowray[colid].*weight
         nnzero = length(colid)
         colid = colid .+ iss*ncells
-        #colid = convert(Array{Int32,1},colid)
-        #rowid = ones(Int32,nnzero) .* dataidx
-
-        #col[zeroid+1:zeroid+nnzero] = colid
-        #row[zeroid+1:zeroid+nnzero] = rowid
-        #nonzerosall[zeroid+1:zeroid+nnzero] = nonzeros
-        #zeroid = zeroid+nnzero
         
-        #relocation
         colidloc .= 0
         rowidloc .= 0
         nonzerosloc .= 0.0
@@ -168,11 +155,6 @@ end
         rowidloc[4] = dataidx
         nonzerosloc[4] = 1.0
         
-        #col[zeroid+1:zeroid+4] = convert(Array{Int32,1},colidloc)
-        #row[zeroid+1:zeroid+4] = convert(Array{Int32,1},rowidloc)
-        #nonzerosall[zeroid+1:zeroid+4] = convert(Array{Float32,1},nonzerosloc)
-        #zeroid = zeroid+4
-
         colid = convert(Array{Int32,1},vcat(colid,colidloc))
         rowid = ones(Int32,nnzero+4) .* dataidx
         nonzeros = convert(Array{Float32,1},vcat(nonzeros,nonzerosloc)*weight)
@@ -183,7 +165,7 @@ end
         zeroid = zeroid+nnzero+4
     end
 
-    println("Finishing ray tracing with nonzeros: $(zeroid)");flush(stdout)
+    @info "Finishing ray tracing with nonzeros: $(zeroid)"
     b = b[1:dataidx]
     col = col[1:zeroid]
     row = row[1:zeroid]
@@ -211,14 +193,14 @@ end
     cnorm = cnorm[colid]
     end
 
-    damp = 5.0
+    damp = 1.0
     atol = 1e-4
     btol = 1e-6
     conlim = 100
     maxiter = 100
     x = lsmr(G,b,λ=damp, atol = atol, btol = btol,log = true)
-    println(x[2])
-    println("max col no.$(length(colid))")
+    @info x[2]
+    @info "max col no.$(length(colid))"
 
     x = x[1]
     xall = zeros(Float32,ncol)
@@ -234,86 +216,58 @@ end
     xs = xall[ncells+1:2*ncells]
     xall = nothing
 
-    println("begin projection matrix");flush(stdout)
     @info "begin projection matrix"
     dlat = pi/nlat
     dlon = 2*pi/nlon
     drad = (EARTH_RADIUS-EARTH_CMB)/nrad
     lat = -(pi-dlat)/2.0:dlat:(pi-dlat)/2.0
-    lat = collect(pi/2.0 .- lat)
-    lat = convert(Array{Float32},lat)
+    lat = collect(Float32,pi/2.0 .- lat)
     lon = dlon/2.0:dlon:2*pi
-    lon = collect(lon)
-    lon = convert(Array{Float32},lon)
+    lon = collect(Float32,lon)
     rad = EARTH_RADIUS .- HVR.*(drad/2.0:drad:nrad*drad-drad/2.0)
-    rad = collect(rad)
-    rad = convert(Array{Float32},rad)
+    rad = collect(Float32,rad)
     npara = nlat*nlon*nrad
-    #latall = reshape([xj for xj in lat for yj in lon for zj in rad], npara)
-    #lonall = reshape([yj for xj in lat for yj in lon for zj in rad], npara)
-    #radall = reshape([zj for xj in lat for yj in lon for zj in rad], npara)
 
-    #latall = zeros(Float32,npara)
-    #lonall = zeros(Float32,npara)
-    #radall = zeros(Float32,npara)
-    gridxyz = zeros(Float32,3,npara)
+    gridxyz = zeros(Float32,npara,3)
     colgp = ones(Int32,npara)
 
     idx = 0
-    xpts = zeros(3)
     for xj in lat
         for yj in lon
             for zj in rad
                 idx += 1
-                #latall[idx] = xj
-                #lonall[idx] = yj
-                #radall[idx] = zj
-                xpts = @view gridxyz[:,idx]
-                xpts[1] = zj * sin(xj) * cos(yj)
-                xpts[2] = zj * sin(xj) * sin(yj)
-                xpts[3] = zj * cos(xj) 
-                #gridxyz[idx,:] .= xpts
-                #colgppt, _ = knn(kdtree, xpts, 1, false)
-                #colgp[idx] = colgppt[1]
+                gridxyz[idx,1] = zj * sin(xj) * cos(yj)
+                gridxyz[idx,2] = zj * sin(xj) * sin(yj)
+                gridxyz[idx,3] = zj * cos(xj) 
             end
         end
     end
-    println("Finishing projection matrix")
+    @info "Finishing projection matrix"
     
-    #gridsph = hcat(radall,latall,lonall)
-    #gridxyz = sph2xyz(gridsph)
-    #radall = 0 
-    #latall = 0
-    #lonall = 0
-    #gridsph = 0
-    #
-    #println("Finishing projection matrix")
     k = 1
-    colgp, _ = knn(kdtree, gridxyz, k, false)
-    gridxyz = 0
-    colgp = [x[1] for x in colgp]
+    colgp, _ = knn(kdtree, transpose(gridxyz), k, false)
+    gridxyz = nothing
+    colgp = [Int32(x[1]) for x in colgp]
     
-    colgp = convert(Array{Int32,1},colgp)
-
-    rowgp = convert(Array{Int32,1},collect(1:npara))
+    rowgp = collect(Int32,1:npara)
     valuegp = ones(Float32,npara)
     Gp = sparse(rowgp,colgp,valuegp,npara,ncells)
 
-    rowgp = 0
-    colgp = 0
-    valuegp = 0 
- 
-    vp = Gp*xp
-    vs = Gp*xs
-    vp = convert(Array{Float32},vp)
-    vs = convert(Array{Float32},vs)
+    rowgp = nothing
+    colgp = nothing
+
+    vp = valuegp
+    vp[:] = Gp*xp
+    vs = valuegp
+    vs[:] = Gp*xs
+    valuegp = nothing
     h5open("juliadata/zap_vp$(iter).h5","w") do file
         write(file,"vp",vp)
     end
     h5open("juliadata/zap_vs$(iter).h5","w") do file
         write(file,"vs",vs)
     end
-    return nothing#vp[1]
+    return nothing
 end
 
 
@@ -342,20 +296,18 @@ end
 #Args
 #lat,lon,dep
 #"""
-@everywhere function geo2sph(geopts::Array{Float32,2})::Array{Float32,2}
-    lat = @view geopts[:,1]
-    lon = @view geopts[:,2]
-    depth = @view geopts[:,3]
-    npoints = length(lat)
-    sph = zeros(Float32,npoints,3)
-    rad = @view sph[:,1]
-    lat = @view sph[:,2]    
-    lon = @view sph[:,3]
-    rad[:] = -depth .+ EARTH_RADIUS 
-    lat[:] = pi/.2 .- deg2rad.(lat) 
-    lon[:] = deg2rad.(lon)
-    return sph
+@everywhere function geo2sph!(geopts::Array{T,2}) where T <: Real
+    npoints = size(geopts,1)
+    for ii = 1:npoints
+    lat = geopts[ii,1]
+    lon = geopts[ii,2]
+    depth = geopts[ii,3]
+    geopts[ii,1] = -depth .+ EARTH_RADIUS 
+    geopts[ii,2] = pi/.2 .- deg2rad.(lat) 
+    geopts[ii,3] = deg2rad.(lon)
+    end
 end
+
 ##
 
 ##
@@ -364,19 +316,16 @@ end
 #Args
 #rad,phi,theta
 #"""
-@everywhere function sph2xyz(sph::Array{Float32,2})::Array{Float32,2}
-    npoints,_ = size(sph)
-    rad = @view sph[:,1]
-    phi = @view sph[:,2]
-    theta = @view sph[:,3]
-    xyz = zeros(Float32,3,npoints)
-    x = @view xyz[1,:]
-    y = @view xyz[2,:]
-    z = @view xyz[3,:]
-    x[:] = rad .* sin.(phi) .* cos.(theta)
-    y[:] = rad .* sin.(phi) .* sin.(theta)
-    z[:] = rad .* cos.(phi) 
-    return xyz
+@everywhere function sph2xyz!(sph::Array{T,2}) where T <: Real
+    npoints = size(sph,1)
+    for ii = 1:npoints
+    rad = sph[ii,1]
+    phi = sph[ii,2]
+    theta = sph[ii,3]
+    sph[ii,1] = rad * sin(phi) * cos(theta)
+    sph[ii,2] = rad * sin(phi) * sin(theta)
+    sph[ii,3] = rad * cos(phi) 
+    end
 end
 ##
 
@@ -394,12 +343,14 @@ end
     sph = hcat(cellrad,cellphi,celltheta)
     sph = convert(Array{Float32,2},sph)
 
-    cellxyz = sph2xyz(sph)
-    kdtree = KDTree(cellxyz;leafsize=10)
-    sph = geo2sph(eventsloc)
-    xyz = sph2xyz(sph)
+    #cellxyz = sph2xyz(sph)
+    sph2xyz!(sph)
+    kdtree = KDTree(transpose(sph);leafsize=10)
+    #sph = geo2sph(eventsloc)
+    geo2sph!(eventsloc)
+    sph2xyz!(eventsloc)
     k = 1
-    idxs, _ = knn(kdtree, xyz, k, false)
+    idxs, _ = knn(kdtree, transpose(eventsloc), k, false)
     idxs = [x[1] for x in idxs]
     idxs = convert(Array{Int32,1},idxs)
 
@@ -429,8 +380,8 @@ end
 #main function
 
 function main()
-    nthreal = 1
-    nrealizations = 5 
+    nthreal = 101
+    nrealizations = 1 
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     jdata = load("../iscehbdata/allbodydata")
@@ -438,14 +389,13 @@ function main()
     ##
     events = select(jdata,(:evlat,:evlon,:evdep,:eventid))
     events = table(unique!(rows(events)))
-    nevents = 9000
+    nevents = 20
     ncells = 20000
     ndatap = 100_000
     ndatas_frac = 0.95
     @sync @distributed for iter in nthreal:nthreal+nrealizations-1
     #for iter in nthreal:nthreal+nrealizations-1
         eventsusedlist = geteventsweight(events,nevents)
-        println("finish event sampling");flush(stdout)
         @info "finish event sampling $(length(eventsusedlist))"
         jdatasub = filter(x -> x.eventid in eventsusedlist,jdata)
         eventid = select(jdatasub,:eventid)
@@ -484,10 +434,9 @@ function main()
 
         jdatasub = merge(jdatasubp,jdatasubs)
         #jdatasub = jdatasubp
-        jdatasubp = 0
-        jdatasubs = 0 
+        jdatasubp = nothing
+        jdatasubs = nothing 
 
-        println("begin subspace inversion");flush(stdout)
         @info "begin subspace inversion $(length(jdatasub))"
         jdatasub = reindex(jdatasub, (:iss, :evlat, :evlon,:evdep,:stlat,
                             :stlon))
