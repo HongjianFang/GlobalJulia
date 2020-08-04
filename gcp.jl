@@ -1,5 +1,6 @@
 using LinearAlgebra: cross,dot
-function gcp(lat1::Float64,lon1::Float64,lat2::Float64,lon2::Float64,delta::Float64)::Array{Float64,2}
+#function gcp(lat1::Float64,lon1::Float64,lat2::Float64,lon2::Float64,delta::Float64)::Array{Float64,2}
+function gcp(lat1::T,lon1::T,lat2::T,lon2::T,delta::T) where T <: Real
     lat1 = deg2rad(lat1)
     lon1 = deg2rad(lon1)
     lat2 = deg2rad(lat2)

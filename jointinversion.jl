@@ -214,6 +214,7 @@ end
     end
     xp = xall[1:ncells]
     xs = xall[ncells+1:2*ncells]
+    @info "min and max vp and vs",minimum(xp),maximum(xp),minimum(xs),maximum(xs)
     xall = nothing
 
     @info "begin projection matrix"
@@ -255,16 +256,14 @@ end
 
     rowgp = nothing
     colgp = nothing
-
-    vp = valuegp
-    vp[:] = Gp*xp
-    vs = valuegp
-    vs[:] = Gp*xs
     valuegp = nothing
-    h5open("juliadata/zap_vp$(iter).h5","w") do file
+
+    vp = Gp*xp
+    vs = Gp*xs
+    h5open("juliadata/eofe_vp$(iter).h5","w") do file
         write(file,"vp",vp)
     end
-    h5open("juliadata/zap_vs$(iter).h5","w") do file
+    h5open("juliadata/eofe_vs$(iter).h5","w") do file
         write(file,"vs",vs)
     end
     return nothing
