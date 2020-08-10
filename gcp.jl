@@ -27,9 +27,10 @@ function gcp(lat1::T,lon1::T,lat2::T,lon2::T,delta::T) where T <: Real
     lons = atan.(unit_r[:,1],unit_r[:,3])
 
     path = hcat(lats,lons)
-    dist = [total_ar*r0,r0]
-    dist = reshape(dist,1,2)
-    return vcat(path,dist)
+    dist = total_arc*r0#,r0]
+    #dist = reshape(dist,1,2)
+    #return vcat(path,dist)
+    return path,dist
 end
 
 

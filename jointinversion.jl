@@ -10,6 +10,7 @@ using Distributed
 @everywhere using JuliaDB
 @everywhere using LinearAlgebra
 @everywhere using ProgressMeter
+@everywhere using DelimitedFiles
 @everywhere GC.gc()
 
 @everywhere taup = PyCall.pyimport("obspy.taup")
@@ -19,6 +20,47 @@ using Distributed
 @everywhere const HVR = 1.0
 @everywhere const EARTH_CMB = 3481.0
 @everywhere const EARTH_RADIUS = 6371.0
+
+
+@everywhere using LinearAlgebra: cross,dot
+@everywhere function gcp(lat1::T,lon1::T,lat2::T,lon2::T,delta::T) where T <: Real
+    lat1 = deg2rad(lat1)
+    lon1 = deg2rad(lon1)
+    lat2 = deg2rad(lat2)
+    lon2 = deg2rad(lon2)
+
+    ur1 = [cos(lat1)*sin(lon1),sin(lat1),cos(lat1)*cos(lon1)]
+    ur2 = [cos(lat2)*sin(lon2),sin(lat2),cos(lat2)*cos(lon2)]
+
+    norm_vec = cross(ur1,ur2)
+    unorm = norm_vec./sqrt(sum(norm_vec.^2))
+    
+    tvec = cross(unorm,ur1)
+    utvec = tvec./sqrt(sum(tvec.^2))
+    total_arc = acos(dot(ur1,ur2))
+
+    r0 = 6371.0f0
+    angs2use = collect(range(0.0f0, stop = total_arc, length = convert(Int64,ceil(total_arc*r0/delta))))
+    m = length(angs2use)
+
+    unit_r = (ones(m,1)*reshape(ur1,1,3)).*transpose(ones(3)*reshape(cos.(angs2use),1,m)) +
+             (ones(m,1)*reshape(tvec,1,3)).*transpose(ones(3)*reshape(sin.(angs2use),1,m))
+
+    unit2 = @view unit_r[:,2]
+    id = findall(x->x>1.0f0,unit2)
+    unit2[id].=1.0f0
+    id = findall(x->x<-1.0f0,unit2)
+    unit2[id].=-1.0f0
+    lats = asin.(unit_r[:,2])
+    lons = atan.(unit_r[:,1],unit_r[:,3])
+
+    path = hcat(lats,lons)
+    dist = total_arc*r0
+    #dist = [total_arc*r0,r0]
+    #dist = reshape(dist,1,2)
+    #return vcat(path,dist)
+    return path,dist
+end
 
 @everywhere function wrap_get_ray_paths_geo(evdep::Float32,evlat::Float32,
                         evlon::Float32,stlat::Float32,stlon::Float32,
@@ -45,25 +87,29 @@ using Distributed
     return (ifray,rayparam,raytakeoffangle,raypts)
 end
 
-@everywhere function subspaceinv(datasub::IndexedTable,iter::Number,
-                    ncells::Number,phases::Array{Array{String,1},1})
+@everywhere function subspaceinv(datasub::IndexedTable,iter::Int64,
+                    ncells::Int64,phases::Array{Array{String,1},1},joint::Int64,
+                    periods::Array{Float64,1},dispersyn::Array{Float64,1},
+                    lnvp::Array{Float64,2},lnvs::Array{Float64,2},surfdata::IndexedTable)
     mindist = 2.0f0
     threshold = 0.2
     weight_s = 0.1
     nlat = 512
     nlon = 1024
     nrad = 128
-    sparsefrac = 0.003f0
+    sparsefrac = 0.01f0#0.003f0
     k = 1
     columnnorm = 0
-    
+   
     cellsph = generate_vcells(ncells)
     sph2xyz!(cellsph)
     kdtree = KDTree(transpose(cellsph);leafsize=10)
     #kdtree = BallTree(transpose(cellxyz), Euclidean(),leafsize = 10)
     
     dataidx = Int32(0)
-    ndata = length(datasub)
+    ndatabody = length(datasub)
+    ndatasurf = length(surfdata)
+    ndata = ndatabody+ndatasurf
     @info "start sensitivity mastrix $(ndata)"
 
     maxnonzero = Int32(sparsefrac*ncells*ndata)
@@ -90,7 +136,7 @@ end
     rowray = zeros(Float64,ncells)
 
     #@showprogress for ii in 1:ndata
-    for ii in 1:ndata
+    for ii in 1:ndatabody
         evlat = evlatall[ii]
         evlon = evlonall[ii]
         evdep = evdepall[ii]
@@ -165,6 +211,91 @@ end
         zeroid = zeroid+nnzero+4
     end
 
+    if joint == 1
+        weightsurf = 1.0
+        delta = 5.0f0
+        cutdep = 17
+        #ndatasurf = length(surfdata)
+        @info "begin surface wave $(ndatasurf)"
+        evlatsurf = select(surfdata,:evlat)
+        evlonsurf = select(surfdata,:evlon)
+        stlatsurf = select(surfdata,:stlat)
+        stlonsurf = select(surfdata,:stlon)
+        periodssurf = select(surfdata,:period)
+        dispersion = select(surfdata,:disper)
+        #periods = select(periods,:periods)
+        #dispersyn = select(dispersyn,:disper)
+
+        drad = (EARTH_RADIUS-EARTH_CMB)/nrad
+        pathrad = EARTH_RADIUS .- HVR.*(drad/2.0:drad:nrad*drad-drad/2.0)
+        pathrad = collect(Float32,pathrad)
+        for idata = 1:ndatasurf
+            dataidx += oneunit(dataidx)
+            evlat = evlatsurf[idata]
+            evlon = evlonsurf[idata]
+            stlat = stlatsurf[idata]
+            stlon = stlonsurf[idata]
+            pathlatlon,dist = gcp(evlat,evlon,stlat,stlon,delta)
+            #dist = pathlatlon[end,1]
+            pathlat = @view pathlatlon[1:end,1]
+            pathlon = @view pathlatlon[1:end,2]
+            pathrad = pathrad[1:cutdep]
+
+            npts = size(pathlat,1)
+            idx = zeros(Int64,npts*cutdep)
+            depidx = zeros(Int64,npts*cutdep)
+
+            for idep = 1:cutdep
+                pathradlay = pathrad[idep]
+                xcor = pathradlay.*sin.(pi/2 .-pathlat).*cos.(pathlon)
+                ycor = pathradlay.*sin.(pi/2 .-pathlat).*sin.(pathlon)
+                zcor = pathradlay.*cos.(pi/2 .-pathlat)
+                idxlay, _ = knn(kdtree, transpose(hcat(xcor,ycor,zcor)), 1, false)
+                idxlay = [x[1] for x in idxlay]
+                idx[(idep-1)*npts+1:idep*npts] = idxlay
+                depidx[(idep-1)*npts+1:idep*npts] .= idep
+            end
+
+            uidx = unique(idx)
+            nnzero = length(uidx)
+            period = periodssurf[idata]
+            peridx = findfirst(x->x==period,periods)
+            disperobs = dispersion[idata]
+            #ressurf = (dist/disperobs*1000 - dist/dispersyn[peridx])
+            ressurf = disperobs/1000.0f0-dispersyn[peridx]
+            weight = 1.0/(1+0.05*exp(ressurf^2*0.1))*weightsurf
+            b[dataidx] = weight*ressurf
+            #@info idata,evlat,evlon,stlat,stlon,weight*ressurf,nnzero,period,peridx
+            for ii = 1:nnzero
+                zeroid = zeroid+1
+                col[zeroid] = uidx[ii]+ncells
+                row[zeroid] = dataidx
+                idxt = findall(x->x==uidx[ii],idx)
+                gtmp = 0.0
+                for jj in idxt
+                    #gtmp += lnvs[depidx[jj],peridx]
+                    gtmp += delta*lnvs[depidx[jj],peridx]
+                end
+
+                #nzero_value = -delta*gtmp/dispersyn[peridx]^2*weight
+                nzero_value = gtmp/dist*weight
+                nonzerosall[zeroid] = nzero_value
+
+                zeroid = zeroid+1
+                col[zeroid] = uidx[ii]
+                row[zeroid] = dataidx
+                gtmp = 0.0
+                for jj in idxt
+                    #gtmp += lnvp[depidx[jj],peridx]
+                    gtmp += delta*lnvp[depidx[jj],peridx]
+                end
+                #nzero_value = -delta*gtmp/dispersyn[peridx]^2*weight
+                nzero_value = gtmp/dist*weight
+                nonzerosall[zeroid] = nzero_value
+            end
+        end
+    end
+
     @info "Finishing ray tracing with nonzeros: $(zeroid)"
     b = b[1:dataidx]
     col = col[1:zeroid]
@@ -193,7 +324,7 @@ end
     cnorm = cnorm[colid]
     end
 
-    damp = 1.0
+    damp = 0.1
     atol = 1e-4
     btol = 1e-6
     conlim = 100
@@ -357,6 +488,26 @@ end
 end
 
 ##
+@everywhere function samplesurfdata(data::IndexedTable,nsample::Number=10000)
+    gd = groupby(length,data,:period)
+    idx_sum = 1.0 ./ select(gd,:length)
+    gd = transform(gd,:idx_sum=>idx_sum)
+    data = join(data,gd,lkey=:period,rkey=:period)
+    dataweights = select(data,:idx_sum)
+    data = transform(data,:didx=>1:length(data))
+    dataidx = sample(1:length(data), Weights(dataweights), 
+                  nsample,replace=false,ordered=true)
+    data = filter(x -> x.didx in dataidx,data)
+    #stlat = select(data,:stlat)
+    #id = findall(x->x==-90.0f0,stlat)
+    #stlat[id] .= -89.99f0
+    #stlon = select(data,:stlon)
+    #id = findall(x->x==0.0f0,stlon)
+    #stlon[id] .= 0.01f0
+    return data
+end
+
+##
 @everywhere function geteventsweight(events::IndexedTable,
                                     nevents::Number=100)::Array{Int32,1}
     eventsloc = hcat(select(events,:evlat),
@@ -379,8 +530,8 @@ end
 #main function
 
 function main()
-    nthreal = 101
-    nrealizations = 1 
+    nthreal = 300
+    nrealizations = 10 
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     jdata = load("../iscehbdata/allbodydata")
@@ -388,7 +539,7 @@ function main()
     ##
     events = select(jdata,(:evlat,:evlon,:evdep,:eventid))
     events = table(unique!(rows(events)))
-    nevents = 20
+    nevents = 5000
     ncells = 20000
     ndatap = 100_000
     ndatas_frac = 0.95
@@ -439,7 +590,33 @@ function main()
         @info "begin subspace inversion $(length(jdatasub))"
         jdatasub = reindex(jdatasub, (:iss, :evlat, :evlon,:evdep,:stlat,
                             :stlon))
-        subspaceinv(jdatasub,iter,ncells,phases)
+        joint = 1
+
+        if joint == 1
+            @info "begin reading surface wave data"
+            #periods = loadtable("../iscehbdata/periodsnew.dat",header_exists=false,colnames=["periods"])
+            #dispersyn = loadtable("../iscehbdata/disper_surf.dat",header_exists=false,colnames=["disper"])
+            #nperiods = length(periods)
+            #lnvp = loadtable("../iscehbdata/lnvp_sfdisp.dat",
+            #                   header_exists= false,
+            #                   spacedelim=true,
+            #                   colnames=["period"*string(ii) for ii=1:nperiods]
+            #                  )
+            #lnvs = loadtable("../iscehbdata/lnvs_sfdisp.dat",
+            #                   header_exists= false,
+            #                   spacedelim=true,
+            #                   colnames=["period"*string(ii) for ii=1:nperiods]
+            #                  )
+            periods = vec(readdlm("../iscehbdata/periodsnew.dat"))
+            dispersyn = vec(readdlm("../iscehbdata/disper_surf.dat"))
+            lnvs = readdlm("../iscehbdata/lnvs_sfdisp.dat")
+            lnvp = readdlm("../iscehbdata/lnvp_sfdisp.dat")
+            surfdata = load("../iscehbdata/surfdata")
+            surfdata = samplesurfdata(surfdata,100000)
+            #@info typeof(surfdata),length(surfdata)
+        end
+ 
+        subspaceinv(jdatasub,iter,ncells,phases,joint,periods,dispersyn,lnvp,lnvs,surfdata)
     end
     return nothing
 end
