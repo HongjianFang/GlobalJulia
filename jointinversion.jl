@@ -331,10 +331,9 @@ end
     btol = 1e-6
     conlim = 100
     maxiter = 50
-    x = lsmr(G, b, � = damp, atol = atol, btol = btol,
+
+    x = lsmr(G, b, λ = damp, atol = atol, btol = btol,
 	     maxiter = maxiter, log = true)
-    #x = lsmr(G,b,λ=damp, atol = atl, btol = btol, 
-    #         maxiter = maxiter,log = true)
     @info x[2]
     @info "max col no.$(length(colid))"
 
