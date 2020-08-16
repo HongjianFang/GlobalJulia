@@ -11,6 +11,7 @@ using Distributed
 @everywhere using LinearAlgebra
 @everywhere using ProgressMeter
 @everywhere using DelimitedFiles
+@everywhere using Distributions: Gamma
 @everywhere GC.gc()
 
 @everywhere taup = PyCall.pyimport("obspy.taup")
@@ -212,7 +213,7 @@ end
     end
 
     if joint == 1
-        weightsurf = 1.0
+        weightsurf = 10.0
         delta = 5.0f0
         cutdep = 17
         #ndatasurf = length(surfdata)
@@ -411,10 +412,16 @@ end
     celltheta = 2.0*pi*rand(ncells)
     stretchradialcmb = ( EARTH_RADIUS - EARTH_CMB ) .* HVR
     #cellrad =  stretchradialcmb .* rand(ncells) .+ 
-                EARTH_RADIUS .- stretchradialcmb
-    cellrad =  stretchradialcmb .* rand(ncells*10) .+ 
-                EARTH_RADIUS .- stretchradialcmb
-    cellrad = sample(cellrad, Weights(cellrad.^2), ncells,replace=false)
+    #            EARTH_RADIUS .- stretchradialcmb
+    ncells_base = 5000
+    cellrad_base =  stretchradialcmb .* rand(ncells_base) .+ 
+                    EARTH_RADIUS .- stretchradialcmb
+    distrib = Gamma(2.0,200.0)
+    cellrad_refine = EARTH_RADIUS .- rand(distrib,ncells-ncells_base)
+    cellrad = vcat(cellrad_base,cellrad_refine)
+    #cellrad =  stretchradialcmb .* rand(ncells*10) .+ 
+    #            EARTH_RADIUS .- stretchradialcmb
+    #cellrad = sample(cellrad, Weights(cellrad.^2), ncells,replace=false)
     cellptssph = hcat(cellrad,cellphi,celltheta)
     cellptssph = convert(Array{Float32,2},cellptssph)
     return cellptssph
@@ -530,7 +537,7 @@ end
 #main function
 
 function main()
-    nthreal = 300
+    nthreal = 400
     nrealizations = 10 
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
@@ -539,9 +546,10 @@ function main()
     ##
     events = select(jdata,(:evlat,:evlon,:evdep,:eventid))
     events = table(unique!(rows(events)))
-    nevents = 5000
-    ncells = 20000
-    ndatap = 100_000
+    #nevents = 9000
+    nevents = 10
+    ncells = 10000
+    ndatap = 200_000
     ndatas_frac = 0.95
     @sync @distributed for iter in nthreal:nthreal+nrealizations-1
     #for iter in nthreal:nthreal+nrealizations-1
@@ -612,7 +620,7 @@ function main()
             lnvs = readdlm("../iscehbdata/lnvs_sfdisp.dat")
             lnvp = readdlm("../iscehbdata/lnvp_sfdisp.dat")
             surfdata = load("../iscehbdata/surfdata")
-            surfdata = samplesurfdata(surfdata,100000)
+            surfdata = samplesurfdata(surfdata,200000)
             #@info typeof(surfdata),length(surfdata)
         end
  
