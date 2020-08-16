@@ -230,6 +230,7 @@ end
         drad = (EARTH_RADIUS-EARTH_CMB)/nrad
         pathrad = EARTH_RADIUS .- HVR.*(drad/2.0:drad:nrad*drad-drad/2.0)
         pathrad = collect(Float32,pathrad)
+        #@showprogress for idata = 1:ndatasurf
         for idata = 1:ndatasurf
             dataidx += oneunit(dataidx)
             evlat = evlatsurf[idata]
@@ -325,12 +326,15 @@ end
     cnorm = cnorm[colid]
     end
 
-    damp = 0.1
+    damp = 10.0
     atol = 1e-4
     btol = 1e-6
     conlim = 100
-    maxiter = 100
-    x = lsmr(G,b,λ=damp, atol = atol, btol = btol,log = true)
+    maxiter = 50
+    x = lsmr(G, b, � = damp, atol = atol, btol = btol,
+	     maxiter = maxiter, log = true)
+    #x = lsmr(G,b,λ=damp, atol = atl, btol = btol, 
+    #         maxiter = maxiter,log = true)
     @info x[2]
     @info "max col no.$(length(colid))"
 
@@ -538,7 +542,7 @@ end
 
 function main()
     nthreal = 400
-    nrealizations = 10 
+    nrealizations = 6 
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     jdata = load("../iscehbdata/allbodydata")
