@@ -90,7 +90,7 @@ end
 
 @everywhere function subspaceinv(datasub::IndexedTable,iter::Int64,
                     ncells::Int64,phases::Array{Array{String,1},1},joint::Int64,
-                    periods::Array{Float64,1},dispersyn::Array{Float64,1},
+                    periods::Array{Int32,1},dispersyn::Array{Float32,1},
                     lnvp::Array{Float64,2},lnvs::Array{Float64,2},surfdata::IndexedTable)
     mindist = 2.0f0
     threshold = 0.2
@@ -101,8 +101,10 @@ end
     sparsefrac = 0.01f0#0.003f0
     k = 1
     columnnorm = 0
+    refineslab = true
+    slabpts = 10000
    
-    cellsph = generate_vcells(ncells)
+    cellsph = generate_vcells2(ncells,refineslab,slabpts)
     sph2xyz!(cellsph)
     kdtree = KDTree(transpose(cellsph);leafsize=10)
     #kdtree = BallTree(transpose(cellxyz), Euclidean(),leafsize = 10)
@@ -114,6 +116,7 @@ end
     @info "start sensitivity mastrix $(ndata)"
 
     maxnonzero = Int32(sparsefrac*ncells*ndata)
+    @info "start sensitivity mastrix $(ndata) and maxnonzero $(maxnonzero)"
     row = zeros(Int32,maxnonzero)
     col = zeros(Int32,maxnonzero)
     nonzerosall = zeros(Float32,maxnonzero)
@@ -265,7 +268,9 @@ end
             disperobs = dispersion[idata]
             #ressurf = (dist/disperobs*1000 - dist/dispersyn[peridx])
             ressurf = disperobs/1000.0f0-dispersyn[peridx]
-            weight = 1.0/(1+0.05*exp(ressurf^2*0.1))*weightsurf
+            #weight = 1.0/(1+0.05*exp(ressurf^2*0.1))*weightsurf
+            weight = 1.0/(1+0.05*exp(ressurf^2*30.0))*weightsurf
+            #weight = weightsurf
             b[dataidx] = weight*ressurf
             #@info idata,evlat,evlon,stlat,stlon,weight*ressurf,nnzero,period,peridx
             for ii = 1:nnzero
@@ -320,15 +325,17 @@ end
         cnorm[icol] = n
     end
     colid = findall(x->x>0,cnorm)# .+ iss*ncells
-    normthresh = percentile(cnorm[colid],20)
+    normthresh = percentile(cnorm[colid],10)
     colid = findall(x->x>normthresh,cnorm)# .+ iss*ncells
     G = G[:,colid]
     cnorm = cnorm[colid]
     end
 
-    damp = 10.0
+    damp = 1.0
     atol = 1e-4
     btol = 1e-6
+    #atol = 1e-4
+    #btol = 1e-5
     conlim = 100
     maxiter = 50
 
@@ -404,6 +411,70 @@ end
     return nothing
 end
 
+
+#@everywhere function generate_vcells2(ncells,refineslab::Bool=true,selectpts::Int32=10000)::Array{Float32,2}
+@everywhere function generate_vcells2(ncells,refineslab,selectpts)::Array{Float32,2}
+    stretchradialcmb = ( EARTH_RADIUS - EARTH_CMB ) .* HVR
+    #cellrad =  stretchradialcmb .* rand(ncells) .+ 
+    #            EARTH_RADIUS .- stretchradialcmb
+    #distrib = Gamma(2.0,200.0)
+    #cellrad_refine = EARTH_RADIUS .- rand(distrib,ncells-ncells_base)
+    #cellrad = vcat(cellrad_base,cellrad_refine)
+
+    ncellsurf = 1000
+    ndep = 10
+    depmax = 300.0
+    #deppts = sort(rand(ndep)*depmax)
+    deppts = collect(range(0.0,stop=depmax,length=ndep))+0.1*rand(ndep)*depmax/ndep
+
+    cellphi_surf = acos.(rand(ncellsurf).*2 .- 1.0)# .- pi/2.0
+    cellphi_surf = [xx for xx = cellphi_surf, jj = 1:ndep]
+    cellphi_surf = reshape(cellphi_surf,ncellsurf*ndep,1)
+
+    celltheta_surf = 2.0*pi*rand(ncellsurf)
+    celltheta_surf = [xx for xx = celltheta_surf, jj = 1:ndep]
+    celltheta_surf = reshape(celltheta_surf,ncellsurf*ndep,1)
+
+    cell_surf = [xx for jj = 1:ncellsurf, xx = deppts]
+    cell_surf = EARTH_RADIUS .- reshape(cell_surf,ncellsurf*ndep,1)
+
+    if refineslab
+        slab = readdlm("../iscehbdata/slab.dat")
+        m,_ = size(slab)
+        selectidx = sort!(sample(1:m,selectpts,replace=false))
+        cellphislab = pi/2.0 .- deg2rad.(slab[selectidx,2] .+ randn(selectpts)*5.0)
+        cellthetaslab = deg2rad.(slab[selectidx,1] .+ randn(selectpts)*5.0) 
+        cellradslab = EARTH_RADIUS .+ slab[selectidx,3] .+ randn(selectpts)*5.0 
+    end
+
+    ncells_base = ncells - ncellsurf*ndep - selectpts#5000
+
+    #cellrad =  stretchradialcmb .* rand(ncells*10) .+ 
+    #            EARTH_RADIUS .- stretchradialcmb
+    cellrad_base =  (stretchradialcmb-depmax) .* rand(ncells_base*10) .+ 
+                    EARTH_RADIUS .- stretchradialcmb 
+    cellrad_base = sample(cellrad_base, Weights(cellrad_base.^2), ncells_base,replace=false)
+    cellrad = vcat(cellrad_base,cell_surf)
+
+    #cellphi = acos.(rand(ncells).*2 .- 1.0)# .- pi/2.0
+    #celltheta = 2.0*pi*rand(ncells)
+
+    cellphi = acos.(rand(ncells_base).*2 .- 1.0)# .- pi/2.0
+    cellphi = vcat(cellphi,cellphi_surf)
+
+    celltheta = 2.0*pi*rand(ncells_base)
+    celltheta = vcat(celltheta,celltheta_surf)
+
+
+    cellrad = vcat(cellrad,cellradslab)
+    cellphi = vcat(cellphi,cellphislab)
+    celltheta = vcat(celltheta,cellthetaslab)
+    
+    #cell_surf = round.(cell_surf ./grid_int).*grid_int
+    cellptssph = hcat(cellrad,cellphi,celltheta)
+    cellptssph = convert(Array{Float32,2},cellptssph)
+    return cellptssph
+end
 
 ##
 #"""
@@ -508,12 +579,6 @@ end
     dataidx = sample(1:length(data), Weights(dataweights), 
                   nsample,replace=false,ordered=true)
     data = filter(x -> x.didx in dataidx,data)
-    #stlat = select(data,:stlat)
-    #id = findall(x->x==-90.0f0,stlat)
-    #stlat[id] .= -89.99f0
-    #stlon = select(data,:stlon)
-    #id = findall(x->x==0.0f0,stlon)
-    #stlon[id] .= 0.01f0
     return data
 end
 
@@ -540,8 +605,8 @@ end
 #main function
 
 function main()
-    nthreal = 400
-    nrealizations = 6 
+    nthreal = 810
+    nrealizations = 10 
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     jdata = load("../iscehbdata/allbodydata")
@@ -549,9 +614,9 @@ function main()
     ##
     events = select(jdata,(:evlat,:evlon,:evdep,:eventid))
     events = table(unique!(rows(events)))
-    #nevents = 9000
-    nevents = 10
-    ncells = 10000
+    nevents = 9000
+    #nevents = 1
+    ncells = 40_000
     ndatap = 200_000
     ndatas_frac = 0.95
     @sync @distributed for iter in nthreal:nthreal+nrealizations-1
@@ -605,25 +670,21 @@ function main()
 
         if joint == 1
             @info "begin reading surface wave data"
-            #periods = loadtable("../iscehbdata/periodsnew.dat",header_exists=false,colnames=["periods"])
-            #dispersyn = loadtable("../iscehbdata/disper_surf.dat",header_exists=false,colnames=["disper"])
-            #nperiods = length(periods)
-            #lnvp = loadtable("../iscehbdata/lnvp_sfdisp.dat",
-            #                   header_exists= false,
-            #                   spacedelim=true,
-            #                   colnames=["period"*string(ii) for ii=1:nperiods]
-            #                  )
-            #lnvs = loadtable("../iscehbdata/lnvs_sfdisp.dat",
-            #                   header_exists= false,
-            #                   spacedelim=true,
-            #                   colnames=["period"*string(ii) for ii=1:nperiods]
-            #                  )
             periods = vec(readdlm("../iscehbdata/periodsnew.dat"))
+            periods = convert(Array{Int32,1},periods)
             dispersyn = vec(readdlm("../iscehbdata/disper_surf.dat"))
+            dispersyn = convert(Array{Float32,1},dispersyn)
             lnvs = readdlm("../iscehbdata/lnvs_sfdisp.dat")
             lnvp = readdlm("../iscehbdata/lnvp_sfdisp.dat")
             surfdata = load("../iscehbdata/surfdata")
-            surfdata = samplesurfdata(surfdata,200000)
+            surfsyn = table((period = periods, dispersyn = dispersyn*1000))
+            surfdata = join(surfdata, surfsyn, lkey = :period, rkey = :period)
+            @info "before filtering of surf data:",length(surfdata)
+            threshold_surf = 400
+            ndatasurf = 200_000
+            surfdata = filter( x -> abs(x.dispersyn - x.disper) < threshold_surf, surfdata)
+            @info "after filtering of surf data:",length(surfdata)
+            surfdata = samplesurfdata(surfdata,ndatasurf)
             #@info typeof(surfdata),length(surfdata)
         end
  
