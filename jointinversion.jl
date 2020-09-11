@@ -18,7 +18,7 @@ using Distributed
 @everywhere model = taup.TauPyModel(model="ak135")
 @everywhere get_ray_paths_geo = model.get_ray_paths_geo
 
-@everywhere const HVR = 1.0
+@everywhere const HVR = 2.0
 @everywhere const EARTH_CMB = 3481.0
 @everywhere const EARTH_RADIUS = 6371.0
 
@@ -102,9 +102,9 @@ end
     k = 1
     columnnorm = 0
     refineslab = true
-    slabpts = 10000
+    slabpts = 2000
    
-    cellsph = generate_vcells2(ncells,refineslab,slabpts)
+    cellsph = generate_vcells3(ncells,refineslab,slabpts)
     sph2xyz!(cellsph)
     kdtree = KDTree(transpose(cellsph);leafsize=10)
     #kdtree = BallTree(transpose(cellxyz), Euclidean(),leafsize = 10)
@@ -216,7 +216,7 @@ end
     end
 
     if joint == 1
-        weightsurf = 10.0
+        weightsurf = 20.0+rand()*30.0
         delta = 5.0f0
         cutdep = 17
         #ndatasurf = length(surfdata)
@@ -411,6 +411,64 @@ end
     return nothing
 end
 
+@everywhere function generate_vcells3(ncells,refineslab,selectpts)::Array{Float32,2}
+    stretchradialcmb = ( EARTH_RADIUS - EARTH_CMB ) .* HVR
+
+    ncellsurf = 1000
+    ndep = 10
+    depmax = 300.0
+    deppts = collect(range(0.0,stop=depmax,length=ndep))+0.1*rand(ndep)*depmax/ndep
+
+    cellphi_surf = acos.(rand(ncellsurf*ndep).*2 .- 1.0)
+    #cellphi_surf = [xx for xx = cellphi_surf, jj = 1:ndep]
+    #cellphi_surf = reshape(cellphi_surf,ncellsurf*ndep,1)
+
+    celltheta_surf = 2.0*pi*rand(ncellsurf*ndep)
+    #celltheta_surf = [xx for xx = celltheta_surf, jj = 1:ndep]
+    #celltheta_surf = reshape(celltheta_surf,ncellsurf*ndep,1)
+
+    cell_surf = [xx for jj = 1:ncellsurf, xx = deppts]
+    cell_surf = EARTH_RADIUS .- reshape(cell_surf,ncellsurf*ndep,1).*HVR
+
+    if refineslab
+        slab = readdlm("../iscehbdata/slab.dat")
+        m,_ = size(slab)
+        selectidx = sort!(sample(1:m,selectpts,replace=false))
+        cellphislab = pi/2.0 .- deg2rad.(slab[selectidx,2] .+ randn(selectpts)*5.0)
+        cellthetaslab = deg2rad.(slab[selectidx,1] .+ randn(selectpts)*5.0) 
+        cellradslab = EARTH_RADIUS .+ HVR*(slab[selectidx,3] .+ randn(selectpts)*5.0)
+    end
+
+    ncells_base = ncells - ncellsurf*ndep - selectpts
+
+    #cellrad =  stretchradialcmb .* rand(ncells*10) .+ 
+    #            EARTH_RADIUS .- stretchradialcmb
+    cellrad_base =  (stretchradialcmb-depmax) .* rand(ncells_base*10) .+ 
+                    EARTH_RADIUS .- stretchradialcmb 
+    cellrad_base = sample(cellrad_base, Weights(cellrad_base.^2), ncells_base,replace=false)
+    cellrad = vcat(cellrad_base,cell_surf)
+
+    #cellphi = acos.(rand(ncells).*2 .- 1.0)# .- pi/2.0
+    #celltheta = 2.0*pi*rand(ncells)
+
+    cellphi = acos.(rand(ncells_base).*2 .- 1.0)# .- pi/2.0
+    cellphi = vcat(cellphi,cellphi_surf)
+
+    celltheta = 2.0*pi*rand(ncells_base)
+    celltheta = vcat(celltheta,celltheta_surf)
+
+
+    cellrad = vcat(cellrad,cellradslab)
+    cellphi = vcat(cellphi,cellphislab)
+    celltheta = vcat(celltheta,cellthetaslab)
+    
+    #cell_surf = round.(cell_surf ./grid_int).*grid_int
+    cellptssph = hcat(cellrad,cellphi,celltheta)
+    cellptssph = convert(Array{Float32,2},cellptssph)
+    return cellptssph
+end
+
+
 
 #@everywhere function generate_vcells2(ncells,refineslab::Bool=true,selectpts::Int32=10000)::Array{Float32,2}
 @everywhere function generate_vcells2(ncells,refineslab,selectpts)::Array{Float32,2}
@@ -514,7 +572,7 @@ end
     lon = geopts[ii,2]
     depth = geopts[ii,3]
     geopts[ii,1] = -depth .+ EARTH_RADIUS 
-    geopts[ii,2] = pi/.2 .- deg2rad.(lat) 
+    geopts[ii,2] = pi/2 .- deg2rad.(lat) 
     geopts[ii,3] = deg2rad.(lon)
     end
 end
@@ -605,8 +663,8 @@ end
 #main function
 
 function main()
-    nthreal = 810
-    nrealizations = 10 
+    nthreal = 1 
+    nrealizations = 6 
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     jdata = load("../iscehbdata/allbodydata")
@@ -616,7 +674,7 @@ function main()
     events = table(unique!(rows(events)))
     nevents = 9000
     #nevents = 1
-    ncells = 40_000
+    ncells = 20_000
     ndatap = 200_000
     ndatas_frac = 0.95
     @sync @distributed for iter in nthreal:nthreal+nrealizations-1
@@ -676,12 +734,12 @@ function main()
             dispersyn = convert(Array{Float32,1},dispersyn)
             lnvs = readdlm("../iscehbdata/lnvs_sfdisp.dat")
             lnvp = readdlm("../iscehbdata/lnvp_sfdisp.dat")
-            surfdata = load("../iscehbdata/surfdata")
+            surfdata = load("../iscehbdata/surfdatanocc")
             surfsyn = table((period = periods, dispersyn = dispersyn*1000))
             surfdata = join(surfdata, surfsyn, lkey = :period, rkey = :period)
             @info "before filtering of surf data:",length(surfdata)
-            threshold_surf = 400
-            ndatasurf = 200_000
+            threshold_surf = 200
+            ndatasurf = 100_000
             surfdata = filter( x -> abs(x.dispersyn - x.disper) < threshold_surf, surfdata)
             @info "after filtering of surf data:",length(surfdata)
             surfdata = samplesurfdata(surfdata,ndatasurf)
