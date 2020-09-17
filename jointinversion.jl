@@ -332,10 +332,12 @@ end
     end
 
     damp = 1.0
-    atol = 1e-4
-    btol = 1e-6
+    #atol = 1e-4
+    #btol = 1e-6
     #atol = 1e-4
     #btol = 1e-5
+    atol = 1e-2
+    btol = 1e-2
     conlim = 100
     maxiter = 50
 
@@ -408,13 +410,14 @@ end
     h5open("juliadata/eofe_vs$(iter).h5","w") do file
         write(file,"vs",vs)
     end
+    @info "Finishing program!!!"
     return nothing
 end
 
 @everywhere function generate_vcells3(ncells,refineslab,selectpts)::Array{Float32,2}
     stretchradialcmb = ( EARTH_RADIUS - EARTH_CMB ) .* HVR
 
-    ncellsurf = 1000
+    ncellsurf = 200
     ndep = 10
     depmax = 300.0
     deppts = collect(range(0.0,stop=depmax,length=ndep))+0.1*rand(ndep)*depmax/ndep
@@ -603,8 +606,8 @@ end
 #sample events based on their distribution
 #"""
 ##
-@everywhere function geteventidx(eventsloc::Array{Float32,2},
-                                eventcell::Number = 100000)::Array{Int32,1}
+@everywhere function geteventidx(eventsloc,
+                                eventcell::Number = 10000)
     cellphi = acos.(rand(eventcell).*2 .- 1.0)
     celltheta = 2.0*pi*rand(eventcell)
     cellrad = EARTH_RADIUS .- 660.0 * rand(eventcell) 
@@ -664,7 +667,7 @@ end
 
 function main()
     nthreal = 1 
-    nrealizations = 6 
+    nrealizations = 5 
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
     jdata = load("../iscehbdata/allbodydata")
@@ -734,15 +737,25 @@ function main()
             dispersyn = convert(Array{Float32,1},dispersyn)
             lnvs = readdlm("../iscehbdata/lnvs_sfdisp.dat")
             lnvp = readdlm("../iscehbdata/lnvp_sfdisp.dat")
-            surfdata = load("../iscehbdata/surfdatanocc")
+            surfdata = load("../iscehbdata/surfdata")
             surfsyn = table((period = periods, dispersyn = dispersyn*1000))
             surfdata = join(surfdata, surfsyn, lkey = :period, rkey = :period)
             @info "before filtering of surf data:",length(surfdata)
-            threshold_surf = 200
-            ndatasurf = 100_000
+            threshold_surf = 100
+            nsurf_choose = 200_000
             surfdata = filter( x -> abs(x.dispersyn - x.disper) < threshold_surf, surfdata)
+            nsurfdata = length(surfdata)
             @info "after filtering of surf data:",length(surfdata)
-            surfdata = samplesurfdata(surfdata,ndatasurf)
+            surfdata = transform(surfdata,:evdep=>zeros(nsurfdata))
+            eventid = select(surfdata,:evid)
+            surfdata = transform(surfdata,:eventid=>eventid)
+            events = select(surfdata,(:evlat,:evlon,:evdep,:eventid))
+            events = table(unique!(rows(events)))
+            eventsusedlist = geteventsweight(events,nevents)
+            surfdata = filter(x -> x.eventid in eventsusedlist,surfdata)
+            nsurfdata = length(surfdata)
+            nsurf_choose = min(nsurf_choose,Int32(round(nsurfdata*0.5)))
+            surfdata = samplesurfdata(surfdata,nsurf_choose)
             #@info typeof(surfdata),length(surfdata)
         end
  
