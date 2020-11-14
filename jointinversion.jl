@@ -94,11 +94,14 @@ end
                     lnvp::Array{Float64,2},lnvs::Array{Float64,2},surfdata::IndexedTable)
     mindist = 2.0f0
     threshold = 0.2
+    vellimit = 0.01
     weight_s = 0.1
     nlat = 512
     nlon = 1024
     nrad = 128
-    sparsefrac = 0.01f0#0.003f0
+    #sparsefrac = 0.003f0#0.003f0
+    #sparsefrac = 0.005f0#0.003f0
+    sparsefrac = 0.02f0#0.003f0
     k = 1
     columnnorm = 0
     refineslab = true
@@ -216,7 +219,9 @@ end
     end
 
     if joint == 1
-        weightsurf = 20.0+rand()*30.0
+        #weightsurf = 20.0+rand()*20.0
+        #weightsurf = 10.0#+rand()*10.0
+        weightsurf = 40.0+rand()*40.0
         delta = 5.0f0
         cutdep = 17
         #ndatasurf = length(surfdata)
@@ -269,7 +274,7 @@ end
             #ressurf = (dist/disperobs*1000 - dist/dispersyn[peridx])
             ressurf = disperobs/1000.0f0-dispersyn[peridx]
             #weight = 1.0/(1+0.05*exp(ressurf^2*0.1))*weightsurf
-            weight = 1.0/(1+0.05*exp(ressurf^2*30.0))*weightsurf
+            weight = 1.0/(1+0.05*exp(ressurf^2*50.0))*weightsurf
             #weight = weightsurf
             b[dataidx] = weight*ressurf
             #@info idata,evlat,evlon,stlat,stlon,weight*ressurf,nnzero,period,peridx
@@ -283,6 +288,7 @@ end
                     #gtmp += lnvs[depidx[jj],peridx]
                     gtmp += delta*lnvs[depidx[jj],peridx]
                 end
+                gtmp = gtmp + delta*lnvs[depidx[idxt[1]],peridx]+delta*lnvs[depidx[idxt[end]],peridx]
 
                 #nzero_value = -delta*gtmp/dispersyn[peridx]^2*weight
                 nzero_value = gtmp/dist*weight
@@ -296,6 +302,7 @@ end
                     #gtmp += lnvp[depidx[jj],peridx]
                     gtmp += delta*lnvp[depidx[jj],peridx]
                 end
+                gtmp = gtmp + delta*lnvp[depidx[idxt[1]],peridx]+delta*lnvp[depidx[idxt[end]],peridx]
                 #nzero_value = -delta*gtmp/dispersyn[peridx]^2*weight
                 nzero_value = gtmp/dist*weight
                 nonzerosall[zeroid] = nzero_value
@@ -331,15 +338,15 @@ end
     cnorm = cnorm[colid]
     end
 
-    damp = 1.0
+    damp = 0.1
     #atol = 1e-4
     #btol = 1e-6
     #atol = 1e-4
     #btol = 1e-5
-    atol = 1e-2
-    btol = 1e-2
+    atol = 1e-3
+    btol = 1e-4
     conlim = 100
-    maxiter = 50
+    maxiter = 100
 
     x = lsmr(G, b, λ = damp, atol = atol, btol = btol,
 	     maxiter = maxiter, log = true)
@@ -358,7 +365,12 @@ end
     end
     xp = xall[1:ncells]
     xs = xall[ncells+1:2*ncells]
+    # note the constant 0.01, potential bug
     @info "min and max vp and vs",minimum(xp),maximum(xp),minimum(xs),maximum(xs)
+    id = findall(x->abs(x)>vellimit,xp)
+    xp[id] = xp[id] ./ [abs(x) for x=xp[id]]*vellimit
+    id = findall(x->abs(x)>vellimit,xs)
+    xs[id] = xs[id] ./ [abs(x) for x=xs[id]]*vellimit
     xall = nothing
 
     @info "begin projection matrix"
@@ -417,16 +429,18 @@ end
 @everywhere function generate_vcells3(ncells,refineslab,selectpts)::Array{Float32,2}
     stretchradialcmb = ( EARTH_RADIUS - EARTH_CMB ) .* HVR
 
-    ncellsurf = 200
-    ndep = 10
-    depmax = 300.0
+    ncellsurf = 150#50#100#200
+    ndep = 15
+    depmax = 400.0
     deppts = collect(range(0.0,stop=depmax,length=ndep))+0.1*rand(ndep)*depmax/ndep
 
     cellphi_surf = acos.(rand(ncellsurf*ndep).*2 .- 1.0)
+    #cellphi_surf = acos.(rand(ncellsurf).*2 .- 1.0)
     #cellphi_surf = [xx for xx = cellphi_surf, jj = 1:ndep]
     #cellphi_surf = reshape(cellphi_surf,ncellsurf*ndep,1)
 
     celltheta_surf = 2.0*pi*rand(ncellsurf*ndep)
+    #celltheta_surf = 2.0*pi*rand(ncellsurf)
     #celltheta_surf = [xx for xx = celltheta_surf, jj = 1:ndep]
     #celltheta_surf = reshape(celltheta_surf,ncellsurf*ndep,1)
 
@@ -446,7 +460,7 @@ end
 
     #cellrad =  stretchradialcmb .* rand(ncells*10) .+ 
     #            EARTH_RADIUS .- stretchradialcmb
-    cellrad_base =  (stretchradialcmb-depmax) .* rand(ncells_base*10) .+ 
+    cellrad_base =  (stretchradialcmb-depmax * HVR) .* rand(ncells_base*10) .+ 
                     EARTH_RADIUS .- stretchradialcmb 
     cellrad_base = sample(cellrad_base, Weights(cellrad_base.^2), ncells_base,replace=false)
     cellrad = vcat(cellrad_base,cell_surf)
@@ -666,7 +680,7 @@ end
 #main function
 
 function main()
-    nthreal = 1 
+    nthreal = parse(Int32,ARGS[1])#515
     nrealizations = 5 
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
@@ -675,9 +689,9 @@ function main()
     ##
     events = select(jdata,(:evlat,:evlon,:evdep,:eventid))
     events = table(unique!(rows(events)))
-    nevents = 9000
+    nevents = 5000#9000
     #nevents = 1
-    ncells = 20_000
+    ncells = 15_000#50_000
     ndatap = 200_000
     ndatas_frac = 0.95
     @sync @distributed for iter in nthreal:nthreal+nrealizations-1
@@ -743,6 +757,7 @@ function main()
             @info "before filtering of surf data:",length(surfdata)
             threshold_surf = 100
             nsurf_choose = 200_000
+            #nsurf_choose = 1
             surfdata = filter( x -> abs(x.dispersyn - x.disper) < threshold_surf, surfdata)
             nsurfdata = length(surfdata)
             @info "after filtering of surf data:",length(surfdata)
@@ -751,7 +766,7 @@ function main()
             surfdata = transform(surfdata,:eventid=>eventid)
             events = select(surfdata,(:evlat,:evlon,:evdep,:eventid))
             events = table(unique!(rows(events)))
-            eventsusedlist = geteventsweight(events,nevents)
+            eventsusedlist = geteventsweight(events,9000)#nevents)
             surfdata = filter(x -> x.eventid in eventsusedlist,surfdata)
             nsurfdata = length(surfdata)
             nsurf_choose = min(nsurf_choose,Int32(round(nsurfdata*0.5)))
