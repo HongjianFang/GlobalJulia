@@ -93,7 +93,9 @@ end
                     periods::Array{Int32,1},dispersyn::Array{Float32,1},
                     lnvp::Array{Float64,2},lnvs::Array{Float64,2},surfdata::IndexedTable)
     mindist = 2.0f0
-    threshold = 0.2
+    #threshold = 0.2
+    #threshold = 1.0 #doesn't work well, too low resolution, especially for S model
+    threshold = 0.05
     vellimit = 0.01
     weight_s = 0.1
     nlat = 512
@@ -105,7 +107,8 @@ end
     k = 1
     columnnorm = 0
     refineslab = true
-    slabpts = 2000
+    #slabpts = 2000
+    slabpts = 10000
    
     cellsph = generate_vcells3(ncells,refineslab,slabpts)
     sph2xyz!(cellsph)
@@ -219,9 +222,9 @@ end
     end
 
     if joint == 1
-        #weightsurf = 20.0+rand()*20.0
+        weightsurf = 20.0+rand()*20.0
         #weightsurf = 10.0#+rand()*10.0
-        weightsurf = 40.0+rand()*40.0
+        #weightsurf = 50.0+rand()*50.0
         delta = 5.0f0
         cutdep = 17
         #ndatasurf = length(surfdata)
@@ -416,10 +419,10 @@ end
 
     vp = Gp*xp
     vs = Gp*xs
-    h5open("juliadata/eofe_vp$(iter).h5","w") do file
+    h5open("juliadata/eofe_vp$(iter)_joint.h5","w") do file
         write(file,"vp",vp)
     end
-    h5open("juliadata/eofe_vs$(iter).h5","w") do file
+    h5open("juliadata/eofe_vs$(iter)_joint.h5","w") do file
         write(file,"vs",vs)
     end
     @info "Finishing program!!!"
@@ -451,9 +454,12 @@ end
         slab = readdlm("../iscehbdata/slab.dat")
         m,_ = size(slab)
         selectidx = sort!(sample(1:m,selectpts,replace=false))
-        cellphislab = pi/2.0 .- deg2rad.(slab[selectidx,2] .+ randn(selectpts)*5.0)
-        cellthetaslab = deg2rad.(slab[selectidx,1] .+ randn(selectpts)*5.0) 
-        cellradslab = EARTH_RADIUS .+ HVR*(slab[selectidx,3] .+ randn(selectpts)*5.0)
+        #cellphislab = pi/2.0 .- deg2rad.(slab[selectidx,2] .+ randn(selectpts)*5.0)
+        #cellthetaslab = deg2rad.(slab[selectidx,1] .+ randn(selectpts)*5.0) 
+        #cellradslab = EARTH_RADIUS .+ HVR*(slab[selectidx,3] .+ randn(selectpts)*5.0)
+        cellphislab = pi/2.0 .- deg2rad.(slab[selectidx,2] .+ randn(selectpts)*10.0)
+        cellthetaslab = deg2rad.(slab[selectidx,1] .+ randn(selectpts)*10.0) 
+        cellradslab = EARTH_RADIUS .+ HVR*(slab[selectidx,3] .+ randn(selectpts)*10.0)
     end
 
     ncells_base = ncells - ncellsurf*ndep - selectpts
@@ -689,9 +695,10 @@ function main()
     ##
     events = select(jdata,(:evlat,:evlon,:evdep,:eventid))
     events = table(unique!(rows(events)))
-    nevents = 5000#9000
-    #nevents = 1
-    ncells = 15_000#50_000
+    #nevents = 5000#9000
+    nevents = 3000
+    #ncells = 15_000#50_000
+    ncells = 50_000#50_000
     ndatap = 200_000
     ndatas_frac = 0.95
     @sync @distributed for iter in nthreal:nthreal+nrealizations-1
@@ -756,7 +763,9 @@ function main()
             surfdata = join(surfdata, surfsyn, lkey = :period, rkey = :period)
             @info "before filtering of surf data:",length(surfdata)
             threshold_surf = 100
-            nsurf_choose = 200_000
+            #nsurf_choose = 200_000
+            #nsurf_choose = 20_000
+            nsurf_choose = 10_000
             #nsurf_choose = 1
             surfdata = filter( x -> abs(x.dispersyn - x.disper) < threshold_surf, surfdata)
             nsurfdata = length(surfdata)
