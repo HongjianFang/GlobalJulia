@@ -107,8 +107,8 @@ end
     k = 1
     columnnorm = 0
     refineslab = true
-    #slabpts = 2000
-    slabpts = 10000
+    slabpts = 5000
+    #slabpts = 20000
    
     cellsph = generate_vcells3(ncells,refineslab,slabpts)
     sph2xyz!(cellsph)
@@ -222,7 +222,9 @@ end
     end
 
     if joint == 1
-        weightsurf = 20.0+rand()*20.0
+        weightsurf = 20.0+rand()*10.0
+        #weightsurf = 30.0+rand()*30.0
+        #weightsurf = 10.0+rand()*10.0
         #weightsurf = 10.0#+rand()*10.0
         #weightsurf = 50.0+rand()*50.0
         delta = 5.0f0
@@ -325,7 +327,6 @@ end
     nonzerosall = nothing
     
     ncol = size(G,2)
-    if columnnorm == 1
     cnorm = zeros(Float32,ncol)
     @inbounds for icol = 1 : ncol
         i = G.colptr[icol]
@@ -334,6 +335,7 @@ end
         n > 0.0 && (G.nzval[i:k] ./= n)
         cnorm[icol] = n
     end
+    if columnnorm == 1
     colid = findall(x->x>0,cnorm)# .+ iss*ncells
     normthresh = percentile(cnorm[colid],10)
     colid = findall(x->x>normthresh,cnorm)# .+ iss*ncells
@@ -358,16 +360,21 @@ end
 
     x = x[1]
     xall = zeros(Float32,ncol)
+    dwsall = zeros(Float32,ncol)
     if columnnorm == 1
     x ./= cnorm
     x = convert(Array{Float32,1},x)
     xall[colid] = x
+    dwsall[colid] = cnorm
     else
     x = convert(Array{Float32,1},x)
     xall = x
+    dwsall = cnorm
     end
     xp = xall[1:ncells]
     xs = xall[ncells+1:2*ncells]
+    dwsp = cnorm[1:ncells]
+    dwss = cnorm[ncells+1:2*ncells]
     # note the constant 0.01, potential bug
     @info "min and max vp and vs",minimum(xp),maximum(xp),minimum(xs),maximum(xs)
     id = findall(x->abs(x)>vellimit,xp)
@@ -419,11 +426,21 @@ end
 
     vp = Gp*xp
     vs = Gp*xs
+    dwsp = Gp*dwsp
+    dwss = Gp*dwss
     h5open("juliadata/eofe_vp$(iter)_joint.h5","w") do file
+    #h5open("juliadata/eofe_vp$(iter)_surf.h5","w") do file
         write(file,"vp",vp)
     end
     h5open("juliadata/eofe_vs$(iter)_joint.h5","w") do file
+    #h5open("juliadata/eofe_vs$(iter)_surf.h5","w") do file
         write(file,"vs",vs)
+    end
+    h5open("juliadata/eofe_dwsp$(iter)_joint.h5","w") do file
+        write(file,"dwsp",dwsp)
+    end
+    h5open("juliadata/eofe_dwss$(iter)_joint.h5","w") do file
+        write(file,"dwss",dwss)
     end
     @info "Finishing program!!!"
     return nothing
@@ -432,7 +449,7 @@ end
 @everywhere function generate_vcells3(ncells,refineslab,selectpts)::Array{Float32,2}
     stretchradialcmb = ( EARTH_RADIUS - EARTH_CMB ) .* HVR
 
-    ncellsurf = 150#50#100#200
+    ncellsurf = 200#150#100#200
     ndep = 15
     depmax = 400.0
     deppts = collect(range(0.0,stop=depmax,length=ndep))+0.1*rand(ndep)*depmax/ndep
@@ -690,6 +707,7 @@ function main()
     nrealizations = 5 
     factor = 3.0
     phases = [["P","p","Pdiff"],["pP"],["S","s","Sdiff"]]
+    #jdata = load("../iscehbdata/allbodydata_nocc")
     jdata = load("../iscehbdata/allbodydata")
     
     ##
@@ -697,8 +715,9 @@ function main()
     events = table(unique!(rows(events)))
     #nevents = 5000#9000
     nevents = 3000
+    #nevents = 1
     #ncells = 15_000#50_000
-    ncells = 50_000#50_000
+    ncells = 20_000#50_000
     ndatap = 200_000
     ndatas_frac = 0.95
     @sync @distributed for iter in nthreal:nthreal+nrealizations-1
@@ -707,6 +726,9 @@ function main()
         @info "finish event sampling $(length(eventsusedlist))"
         jdatasub = filter(x -> x.eventid in eventsusedlist,jdata)
         eventid = select(jdatasub,:eventid)
+        h5open("juliadata/eventid_$(iter)_body.h5","w") do file
+            write(file,"eventid",eventid)
+        end
         newidx = indexin(eventid,unique(eventid))
         newidx = convert(Array{Int32,1},newidx)
         jdatasub = transform(jdatasub,:eventidnew=>newidx)
@@ -762,7 +784,7 @@ function main()
             surfsyn = table((period = periods, dispersyn = dispersyn*1000))
             surfdata = join(surfdata, surfsyn, lkey = :period, rkey = :period)
             @info "before filtering of surf data:",length(surfdata)
-            threshold_surf = 100
+            threshold_surf = 200
             #nsurf_choose = 200_000
             #nsurf_choose = 20_000
             nsurf_choose = 10_000
@@ -777,6 +799,10 @@ function main()
             events = table(unique!(rows(events)))
             eventsusedlist = geteventsweight(events,9000)#nevents)
             surfdata = filter(x -> x.eventid in eventsusedlist,surfdata)
+            eventid = select(surfdata,:eventid)
+            h5open("juliadata/eventid_$(iter)_surf.h5","w") do file
+                write(file,"eventid",eventid)
+            end
             nsurfdata = length(surfdata)
             nsurf_choose = min(nsurf_choose,Int32(round(nsurfdata*0.5)))
             surfdata = samplesurfdata(surfdata,nsurf_choose)
