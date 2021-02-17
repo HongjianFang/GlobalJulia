@@ -222,11 +222,13 @@ end
     end
 
     if joint == 1
-        weightsurf = 20.0+rand()*10.0
+        #weightsurf = 20.0+rand()*10.0
+       
         #weightsurf = 30.0+rand()*30.0
         #weightsurf = 10.0+rand()*10.0
         #weightsurf = 10.0#+rand()*10.0
-        #weightsurf = 50.0+rand()*50.0
+        weightsurf = 50.0+rand()*10.0
+        #weightsurf = 100.0+rand()*20.0
         delta = 5.0f0
         cutdep = 17
         #ndatasurf = length(surfdata)
@@ -332,7 +334,7 @@ end
         i = G.colptr[icol]
         k = G.colptr[icol+1] - 1
         n = i <= k ? norm(G.nzval[i:k]) : 0.0  
-        n > 0.0 && (G.nzval[i:k] ./= n)
+        #n > 0.0 && (G.nzval[i:k] ./= n)
         cnorm[icol] = n
     end
     if columnnorm == 1
@@ -428,18 +430,24 @@ end
     vs = Gp*xs
     dwsp = Gp*dwsp
     dwss = Gp*dwss
+    #h5open("juliadata/eofe_vp$(iter)_body.h5","w") do file
     h5open("juliadata/eofe_vp$(iter)_joint.h5","w") do file
     #h5open("juliadata/eofe_vp$(iter)_surf.h5","w") do file
         write(file,"vp",vp)
     end
+    #h5open("juliadata/eofe_vs$(iter)_body.h5","w") do file
     h5open("juliadata/eofe_vs$(iter)_joint.h5","w") do file
     #h5open("juliadata/eofe_vs$(iter)_surf.h5","w") do file
         write(file,"vs",vs)
     end
+    #h5open("juliadata/eofe_dwsp$(iter)_body.h5","w") do file
+    #h5open("juliadata/eofe_dwsp$(iter)_surf.h5","w") do file
     h5open("juliadata/eofe_dwsp$(iter)_joint.h5","w") do file
         write(file,"dwsp",dwsp)
     end
     h5open("juliadata/eofe_dwss$(iter)_joint.h5","w") do file
+    #h5open("juliadata/eofe_dwss$(iter)_body.h5","w") do file
+    #h5open("juliadata/eofe_dwss$(iter)_surf.h5","w") do file
         write(file,"dwss",dwss)
     end
     @info "Finishing program!!!"
